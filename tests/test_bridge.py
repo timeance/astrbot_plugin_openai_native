@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -140,6 +141,11 @@ def image_tool():
                     "action": "string",
                     "n": "integer",
                     "references": "array",
+                    "size": "string",
+                    "aspect_ratio": "string",
+                    "resolution": "string",
+                    "quality": "string",
+                    "complexity": "string",
                     "frame_count": "integer",
                     "frame_duration_ms": "integer",
                 }.items()
@@ -191,7 +197,14 @@ def test_filter_copies_schema_preserves_guards_and_other_tools(bridge):
     gif = bridge.filter_tool_set(
         original, {"image": True, "formats": ["gif"], "actions": ["generate", "edit"]}, Settings()
     )
-    assert gif.tools[0].parameters["properties"]["frame_count"]["maximum"] == 16
+    properties = gif.tools[0].parameters["properties"]
+    assert properties["frame_count"]["maximum"] == 16
+    assert properties["frame_count"]["type"] == ["integer", "null"]
+    assert properties["frame_duration_ms"]["type"] == ["integer", "null"]
+    assert properties["resolution"]["enum"] == ["1K", "1.5K", "2K", "4K", None]
+    assert properties["quality"]["enum"] == ["auto", "low", "medium", "high", None]
+    for name in ("size", "aspect_ratio", "resolution", "quality", "complexity"):
+        assert properties[name]["type"] == ["string", "null"]
     assert "enum" not in target.parameters["properties"]["output_format"]
 
 
@@ -234,6 +247,73 @@ async def test_image_submits_background_and_accepts_asset_ids_only(plugin):
         result = await plugin.image(event, "a dog", references=[reference])
         assert '"error"' in result
     plugin.service.submit_image.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {
+            "size": None,
+            "aspect_ratio": None,
+            "resolution": None,
+            "quality": None,
+            "complexity": None,
+            "frame_count": None,
+            "frame_duration_ms": None,
+        },
+        {
+            "size": "auto",
+            "aspect_ratio": "1:1",
+            "resolution": "auto",
+            "quality": "auto",
+            "complexity": "auto",
+            "frame_count": 2,
+            "frame_duration_ms": 500,
+        },
+        {
+            "size": "",
+            "aspect_ratio": "",
+            "resolution": "",
+            "quality": "",
+            "complexity": "",
+            "frame_count": 2,
+            "frame_duration_ms": 500,
+        },
+    ],
+)
+async def test_static_tool_normalizes_inapplicable_and_default_fields(plugin, options):
+    result = json.loads(
+        await plugin.image(Event(), "pelican riding a bicycle", output_format="png", **options)
+    )
+    assert result["task_id"] == "id"
+    request = plugin.service.submit_image.call_args.args[1]
+    assert request.frame_count is None and request.frame_duration_ms is None
+    assert request.resolution == "" and request.quality == "auto"
+    assert request.size == (options["size"] or "")
+    assert request.aspect_ratio == (options["aspect_ratio"] or "")
+    assert request.complexity == (options["complexity"] or "")
+
+
+async def test_gif_tool_keeps_frames_and_default_format(plugin):
+    plugin.settings = Settings({"image": {"default_format": "gif"}, "gif": {"enabled": True}})
+    await plugin.image(Event(), "blinking", frame_count=5, frame_duration_ms=120, resolution=None)
+    request = plugin.service.submit_image.call_args.args[1]
+    assert request.frame_count == 5 and request.frame_duration_ms == 120
+    assert request.resolution == ""
+
+
+async def test_image_argument_error_does_not_claim_service_failure(plugin):
+    plugin.service.submit_image.side_effect = NativeError(
+        "invalid_request", "Choose size or aspect ratio/resolution, not both"
+    )
+    result = json.loads(await plugin.image(Event(), "pelican", size="1024x1024", aspect_ratio="1:1"))
+    assert result["error"]["category"] == "invalid_request"
+    assert result["request_submitted"] is False
+    assert "参数" in result["guidance"]
+    plugin.service.submit_image.side_effect = NativeError("configuration", "Missing image model")
+    result = json.loads(await plugin.image(Event(), "pelican"))
+    assert result["error"]["category"] == "configuration"
+    assert "request_submitted" not in result
 
 
 async def test_probe_requires_admin_and_explicit_confirmation(plugin):

@@ -1,7 +1,7 @@
 name: astrbot_plugin_openai_native
 display_name: OpenAI 原生能力
 desc: OpenAI 原生网页搜索、图片生成与编辑、GIF，以及统一任务和额度管理。
-version: v0.1.1
+version: v0.1.2
 author: OpenAI Native contributors
 repo: https://github.com/timeance/astrbot_plugin_openai_native
 astrbot_version: ">=4.29.4"
