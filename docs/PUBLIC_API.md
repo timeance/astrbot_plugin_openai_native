@@ -29,6 +29,8 @@ for source in result.sources:
 
 `SearchResult` 包含 `operation_id`、`queries`、`sources`、`backend_synthesis`、`usage`、`status`、`untrusted=True`。
 
+Responses 搜索的 `usage.observed_web_search_calls` 记录响应中完成的搜索工具调用数，另保留上游 usage；它不等同于供应商账单次数。Alpha 隐藏的上游执行次数无法从协议推断。
+
 `SearchHit` 包含标题、URL、可空摘要、可空引用 ID 和来源类型。`backend_synthesis` 是上游生成的综合说明，与真实来源元数据分开；外部内容始终是不可信资料，不能作为系统或工具执行指令。
 
 ## 提交图片任务
