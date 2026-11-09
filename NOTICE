@@ -1,0 +1,18 @@
+AstrBot OpenAI Native
+Copyright 2026 OpenAI Native contributors
+
+This project is independently implemented under the Apache License, Version 2.0.
+No source code from the AGPL-3.0 astrbot_plugin_image_generation reference
+project is included. Research references are documented in docs/COMPATIBILITY.md.
+
+Runtime dependencies are installed separately, not vendored here:
+- AstrBot: AGPL-3.0, https://github.com/AstrBotDevs/AstrBot
+- httpx: BSD-3-Clause, https://github.com/encode/httpx
+- aiosqlite: MIT, https://github.com/omnilib/aiosqlite
+- Pillow: HPND / Pillow license, https://github.com/python-pillow/Pillow
+- tzdata: Apache-2.0 package with IANA timezone data notices,
+  https://github.com/python/tzdata
+Their respective licenses remain applicable to those dependencies.
+
+OpenAI, AstrBot, NewAPI, Sub2API and Angel Heart names identify compatible
+interfaces or researched projects. This plugin is not endorsed by those projects.

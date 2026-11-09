@@ -1,0 +1,436 @@
+{
+  "search": {
+    "type": "object",
+    "description": "网页搜索",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用",
+        "default": true
+      },
+      "mode": {
+        "type": "string",
+        "description": "API 来源",
+        "default": "current",
+        "options": [
+          "current",
+          "provider",
+          "manual"
+        ],
+        "hint": "current：提交时固定当前会话供应商；provider：固定下拉所选供应商；manual：独立 API。均不跟随聊天 fallback。"
+      },
+      "provider_id": {
+        "type": "string",
+        "description": "绑定 AstrBot 供应商",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "选择已有 Provider（不是 Provider Source）；仅 mode=provider 时使用。"
+      },
+      "base_url": {
+        "type": "string",
+        "description": "手动 API Base URL",
+        "default": ""
+      },
+      "keys": {
+        "type": "list",
+        "description": "手动 API Key 列表",
+        "default": [],
+        "secret": true,
+        "hint": "仅手动模式使用。每项是 Key 或完整 $NAME / ${NAME} 环境变量引用；不要贴到聊天。"
+      },
+      "model": {
+        "type": "string",
+        "description": "功能模型",
+        "default": "",
+        "hint": "图片模型必须明确设置；Responses 生图另设 host_model。不要根据名称推定 GIF 权限。"
+      },
+      "host_model": {
+        "type": "string",
+        "description": "Responses 宿主模型",
+        "default": ""
+      },
+      "protocol": {
+        "type": "string",
+        "description": "接口协议",
+        "default": "auto",
+        "options": [
+          "auto",
+          "alpha",
+          "responses"
+        ]
+      },
+      "service_type": {
+        "type": "string",
+        "description": "入口服务类型",
+        "default": "auto",
+        "options": [
+          "auto",
+          "openai",
+          "newapi",
+          "sub2api",
+          "unknown"
+        ]
+      },
+      "proxy": {
+        "type": "string",
+        "description": "代理地址",
+        "default": ""
+      },
+      "timeout": {
+        "type": "int",
+        "description": "请求超时（秒，0 复用供应商）",
+        "default": 0
+      },
+      "headers": {
+        "type": "dict",
+        "description": "附加请求头",
+        "default": {},
+        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。"
+      },
+      "extra_body": {
+        "type": "dict",
+        "description": "附加请求体",
+        "default": {},
+        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。"
+      },
+      "paths": {
+        "type": "dict",
+        "description": "接口路径覆盖",
+        "default": {},
+        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。"
+      },
+      "max_queries": {
+        "type": "int",
+        "description": "每次最多查询数",
+        "default": 4
+      },
+      "max_results": {
+        "type": "int",
+        "description": "最多结果数",
+        "default": 10
+      },
+      "default_results": {
+        "type": "int",
+        "description": "默认结果数",
+        "default": 5
+      },
+      "max_tool_calls": {
+        "type": "int",
+        "description": "上游搜索工具次数上限",
+        "default": 4
+      }
+    }
+  },
+  "image": {
+    "type": "object",
+    "description": "图片生成与编辑",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用",
+        "default": true
+      },
+      "mode": {
+        "type": "string",
+        "description": "API 来源",
+        "default": "current",
+        "options": [
+          "current",
+          "provider",
+          "manual"
+        ],
+        "hint": "current：提交时固定当前会话供应商；provider：固定下拉所选供应商；manual：独立 API。均不跟随聊天 fallback。"
+      },
+      "provider_id": {
+        "type": "string",
+        "description": "绑定 AstrBot 供应商",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "选择已有 Provider（不是 Provider Source）；仅 mode=provider 时使用。"
+      },
+      "base_url": {
+        "type": "string",
+        "description": "手动 API Base URL",
+        "default": ""
+      },
+      "keys": {
+        "type": "list",
+        "description": "手动 API Key 列表",
+        "default": [],
+        "secret": true,
+        "hint": "仅手动模式使用。每项是 Key 或完整 $NAME / ${NAME} 环境变量引用；不要贴到聊天。"
+      },
+      "model": {
+        "type": "string",
+        "description": "功能模型",
+        "default": "",
+        "hint": "图片模型必须明确设置；Responses 生图另设 host_model。不要根据名称推定 GIF 权限。"
+      },
+      "host_model": {
+        "type": "string",
+        "description": "Responses 宿主模型",
+        "default": ""
+      },
+      "protocol": {
+        "type": "string",
+        "description": "接口协议",
+        "default": "auto",
+        "options": [
+          "auto",
+          "images",
+          "responses"
+        ]
+      },
+      "service_type": {
+        "type": "string",
+        "description": "入口服务类型",
+        "default": "auto",
+        "options": [
+          "auto",
+          "openai",
+          "newapi",
+          "sub2api",
+          "unknown"
+        ]
+      },
+      "proxy": {
+        "type": "string",
+        "description": "代理地址",
+        "default": ""
+      },
+      "timeout": {
+        "type": "int",
+        "description": "请求超时（秒，0 复用供应商）",
+        "default": 0
+      },
+      "headers": {
+        "type": "dict",
+        "description": "附加请求头",
+        "default": {},
+        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。"
+      },
+      "extra_body": {
+        "type": "dict",
+        "description": "附加请求体",
+        "default": {},
+        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。"
+      },
+      "paths": {
+        "type": "dict",
+        "description": "接口路径覆盖",
+        "default": {},
+        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。"
+      },
+      "max_outputs": {
+        "type": "int",
+        "description": "每次最多输出文件数",
+        "default": 4
+      },
+      "max_references": {
+        "type": "int",
+        "description": "最多参考图片数",
+        "default": 16
+      },
+      "formats": {
+        "type": "list",
+        "description": "允许输出格式",
+        "default": [
+          "png",
+          "jpeg",
+          "webp",
+          "gif"
+        ]
+      },
+      "sizes": {
+        "type": "list",
+        "description": "允许尺寸（空列表由模型决定）",
+        "default": []
+      },
+      "max_pixels": {
+        "type": "int",
+        "description": "单帧最大像素数",
+        "default": 16777216
+      },
+      "max_frames_pixels": {
+        "type": "int",
+        "description": "GIF 总帧最大像素数",
+        "default": 67108864
+      },
+      "default_format": {
+        "type": "string",
+        "description": "默认输出格式",
+        "default": "png"
+      },
+      "default_size": {
+        "type": "string",
+        "description": "默认尺寸",
+        "default": "auto"
+      }
+    }
+  },
+  "gif": {
+    "type": "object",
+    "description": "原生 GIF",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用",
+        "default": false
+      },
+      "frame_count": {
+        "type": "int",
+        "description": "默认 GIF 帧数",
+        "default": 9
+      },
+      "frame_duration_ms": {
+        "type": "int",
+        "description": "默认每帧毫秒",
+        "default": 200
+      }
+    }
+  },
+  "limits": {
+    "type": "object",
+    "description": "额度与并发",
+    "items": {
+      "timezone": {
+        "type": "string",
+        "description": "额度日界时区（IANA）",
+        "default": "UTC"
+      },
+      "user_search": {
+        "type": "int",
+        "description": "群聊用户每日搜索额度（跨群累计）",
+        "default": 20,
+        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。"
+      },
+      "group_search": {
+        "type": "int",
+        "description": "群每日搜索总额度",
+        "default": 200,
+        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。"
+      },
+      "private_search": {
+        "type": "int",
+        "description": "私聊用户每日搜索额度",
+        "default": 20,
+        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。"
+      },
+      "user_image": {
+        "type": "int",
+        "description": "群聊用户每日生图额度（跨群累计）",
+        "default": 3,
+        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。"
+      },
+      "group_image": {
+        "type": "int",
+        "description": "群每日生图总额度",
+        "default": 30,
+        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。"
+      },
+      "private_image": {
+        "type": "int",
+        "description": "私聊用户每日生图额度",
+        "default": 3,
+        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。"
+      },
+      "admin_exempt": {
+        "type": "bool",
+        "description": "管理员豁免额度",
+        "default": false
+      },
+      "search_concurrency": {
+        "type": "int",
+        "description": "搜索并发",
+        "default": 4
+      },
+      "image_concurrency": {
+        "type": "int",
+        "description": "生图并发",
+        "default": 2
+      },
+      "queue_size": {
+        "type": "int",
+        "description": "生图等待队列容量",
+        "default": 20
+      },
+      "user_image_concurrency": {
+        "type": "int",
+        "description": "每用户同时生图任务数",
+        "default": 1
+      },
+      "min_interval_seconds": {
+        "type": "int",
+        "description": "调用最小间隔（秒）",
+        "default": 2
+      },
+      "search_calls_per_message": {
+        "type": "int",
+        "description": "每消息最多搜索调用数",
+        "default": 3
+      }
+    }
+  },
+  "storage": {
+    "type": "object",
+    "description": "文件与任务保存",
+    "items": {
+      "reference_ttl_seconds": {
+        "type": "int",
+        "description": "个人参考图缓存秒数",
+        "default": 600
+      },
+      "artifact_days": {
+        "type": "int",
+        "description": "结果保存天数",
+        "default": 7
+      },
+      "task_days": {
+        "type": "int",
+        "description": "任务记录保存天数",
+        "default": 30
+      },
+      "max_input_bytes": {
+        "type": "int",
+        "description": "单张输入大小上限（字节）",
+        "default": 20971520
+      },
+      "max_output_bytes": {
+        "type": "int",
+        "description": "单张输出大小上限（字节）",
+        "default": 104857600
+      },
+      "max_total_bytes": {
+        "type": "int",
+        "description": "结果文件总大小上限（字节）",
+        "default": 2147483648
+      }
+    }
+  },
+  "network": {
+    "type": "object",
+    "description": "网络与下载",
+    "items": {
+      "connect_timeout": {
+        "type": "int",
+        "description": "连接超时（秒）",
+        "default": 10
+      },
+      "download_timeout": {
+        "type": "int",
+        "description": "下载超时（秒）",
+        "default": 60
+      },
+      "allow_private_download_hosts": {
+        "type": "list",
+        "description": "允许私网下载的主机白名单",
+        "default": []
+      },
+      "download_attempts": {
+        "type": "int",
+        "description": "结果下载最多尝试次数",
+        "default": 3
+      }
+    }
+  }
+}
