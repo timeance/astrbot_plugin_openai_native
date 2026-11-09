@@ -1,0 +1,495 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Authenticated settings endpoints; saved settings remain separate from runtime state."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import inspect
+import ipaddress
+import json
+import math
+import re
+import secrets
+from collections.abc import Mapping
+from copy import deepcopy
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from .config import DEFAULTS, Settings
+from .models import NativeError
+
+_ENV = re.compile(r"(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|env:[A-Za-z_][A-Za-z0-9_]*)\Z")
+_SECRET_NAME = re.compile(r"key|token|secret|password|credential|authorization|cookie", re.I)
+_FEATURES = ("search", "image")
+_SECRET_FIELDS = {f"{feature}.{key}" for feature in _FEATURES for key in ("keys", "headers")}
+_REPLACEABLE = {
+    f"{feature}.{key}"
+    for feature in _FEATURES
+    for key in ("keys", "headers", "base_url", "proxy", "extra_body", "paths")
+}
+_NUMBERS = {
+    "search.timeout",
+    "image.timeout",
+    "limits.min_interval_seconds",
+    "network.connect_timeout",
+    "network.download_timeout",
+}
+
+
+class PageError(Exception):
+    """A fixed, credential-free error safe to return through the page bridge."""
+
+    def __init__(self, code: str, message: str, status: int = 400):
+        super().__init__(message)
+        self.code, self.message, self.status = code, message, status
+
+
+def _encoded(values) -> bytes:
+    return json.dumps(values, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+def _sensitive_url(value) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    if _ENV.fullmatch(value):
+        return True
+    try:
+        parsed = urlsplit(value)
+        return bool(parsed.username or parsed.password or parsed.query or parsed.fragment)
+    except ValueError:
+        # Malformed legacy URLs must not expose a partially parsed credential.
+        return True
+
+
+def _sensitive_mapping(value, *, root=True) -> bool:
+    if isinstance(value, str) and root:
+        if _ENV.fullmatch(value):
+            return True
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return True
+    if isinstance(value, Mapping):
+        return any(
+            _SECRET_NAME.search(str(key)) or _sensitive_mapping(item, root=False)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_sensitive_mapping(item, root=False) for item in value)
+    return isinstance(value, str) and _sensitive_url(value)
+
+
+def _secret(path: str, value) -> bool:
+    if path in _SECRET_FIELDS:
+        return True
+    if path in {f"{feature}.{key}" for feature in _FEATURES for key in ("base_url", "proxy")}:
+        return _sensitive_url(value)
+    if path in {f"{feature}.{key}" for feature in _FEATURES for key in ("extra_body", "paths")}:
+        return _sensitive_mapping(value)
+    return False
+
+
+def _count(value) -> int:
+    if isinstance(value, (list, dict)):
+        return sum(bool(item) for item in (value.values() if isinstance(value, dict) else value))
+    return int(bool(value))
+
+
+def _merge_mapping(current: dict, patch: dict) -> dict:
+    result = deepcopy(current)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _merge_mapping(result[key], value)
+        else:
+            result[key] = deepcopy(value)
+    return result
+
+
+def _object(value):
+    """Preserve the resolver's supported legacy JSON-object and env forms."""
+    if isinstance(value, str):
+        if _ENV.fullmatch(value):
+            return None
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise PageError("validation", "字典配置必须是 JSON 对象。") from None
+    if not isinstance(value, dict):
+        raise PageError("validation", "字典配置必须是对象。")
+    return value
+
+
+def _validate_url(value: str, *, proxy: bool) -> None:
+    if not value or _ENV.fullmatch(value):
+        return
+    schemes = ("http", "https", "socks5", "socks5h") if proxy else ("http", "https")
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        valid = parsed.scheme in schemes and bool(host)
+        valid = valid and not parsed.netloc.rsplit("@", 1)[-1].endswith(":")
+        valid = valid and (parsed.port is None or 1 <= parsed.port <= 65535)
+        if host and (":" in host or re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", host)):
+            ipaddress.ip_address(host)
+        elif host:
+            ascii_host = host.encode("idna").decode("ascii").removesuffix(".")
+            valid = (
+                valid
+                and len(ascii_host) <= 253
+                and all(
+                    re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                    for label in ascii_host.split(".")
+                )
+            )
+    except (ValueError, UnicodeError):
+        valid = False
+    if (
+        not valid
+        or any(char.isspace() or ord(char) < 33 or ord(char) == 127 for char in value)
+        or re.search(r'[<>"{}|^`\\]', value)
+        or re.search(r"%(?![0-9A-Fa-f]{2})", value)
+    ):
+        raise PageError("validation", "API 或代理地址的格式或字符无效。")
+
+
+def _size_pixels(value: str) -> int | None:
+    if value == "auto":
+        return None
+    match = re.fullmatch(r"([0-9]+)x([0-9]+)", value)
+    if not match:
+        raise PageError("validation", "图片尺寸必须是 auto 或正整数宽x高。")
+    width, height = map(int, match.groups())
+    if min(width, height) <= 0:
+        raise PageError("validation", "图片尺寸必须是 auto 或正整数宽x高。")
+    return width * height
+
+
+def _validate(values: dict) -> dict:
+    try:
+        effective = Settings(values).data
+        _encoded(effective)
+    except (NativeError, ValueError, TypeError, OverflowError):
+        raise PageError("validation", "配置类型、范围或时区无效。") from None
+    for section, defaults in DEFAULTS.items():
+        for key, default in defaults.items():
+            path = f"{section}.{key}"
+            value = effective[section][key]
+            if path in _NUMBERS:
+                valid = type(value) in (int, float) and math.isfinite(value) and value >= 0
+            elif type(default) is bool:
+                valid = type(value) is bool
+            elif type(default) is int:
+                valid = type(value) is int
+            elif isinstance(default, str):
+                valid = isinstance(value, str)
+            elif isinstance(default, list):
+                # Older configs accepted a single key or a whole-value env reference.
+                valid = (key == "keys" and isinstance(value, str)) or (
+                    isinstance(value, list) and all(isinstance(item, str) for item in value)
+                )
+            else:
+                obj = _object(value)
+                valid = (
+                    obj is None or key == "extra_body" or all(isinstance(item, str) for item in obj.values())
+                )
+            if not valid:
+                raise PageError("validation", "配置字段类型或范围无效。")
+    for feature in _FEATURES:
+        cfg = effective[feature]
+        if cfg["mode"] not in ("current", "provider", "manual"):
+            raise PageError("validation", "API 来源无效。")
+        protocols = ("auto", "responses", "alpha" if feature == "search" else "images")
+        if cfg["protocol"] not in protocols:
+            raise PageError("validation", "接口协议无效。")
+        if cfg["service_type"] not in ("auto", "openai", "newapi", "sub2api", "unknown"):
+            raise PageError("validation", "入口服务类型无效。")
+        for key in ("base_url", "proxy"):
+            _validate_url(cfg[key], proxy=key == "proxy")
+        headers = _object(cfg["headers"])
+        if headers and any(
+            not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name) or "\r" in item or "\n" in item
+            for name, item in headers.items()
+        ):
+            raise PageError("validation", "请求头名称或内容无效。")
+        paths = _object(cfg["paths"])
+        for value in (paths or {}).values():
+            if _ENV.fullmatch(value):
+                continue
+            parsed = urlsplit(value)
+            if (
+                not value
+                or parsed.scheme
+                or parsed.netloc
+                or parsed.query
+                or parsed.fragment
+                or "\\" in value
+                or any(part in (".", "..") for part in parsed.path.split("/"))
+            ):
+                raise PageError("validation", "接口路径无效。")
+    image, gif = effective["image"], effective["gif"]
+    default_pixels = _size_pixels(image["default_size"])
+    for size in image["sizes"]:
+        _size_pixels(size)
+    if default_pixels is not None and default_pixels > image["max_pixels"]:
+        raise PageError("validation", "默认图片尺寸超过单帧像素上限。")
+    if image["default_format"] not in ("png", "jpeg", "webp", "gif"):
+        raise PageError("validation", "默认图片格式无效。")
+    if not 2 <= gif["frame_count"] <= 16 or not 20 <= gif["frame_duration_ms"] <= 2000:
+        raise PageError("validation", "GIF 帧数或帧时长超出范围。")
+    return effective
+
+
+def _http_response(data, *, status_code=200, headers=None):
+    try:
+        from astrbot.api.web import json_response
+    except ImportError:
+        from quart import jsonify
+
+        response = jsonify(data)
+        response.status_code = status_code
+        response.headers.update(headers or {})
+        return response
+    return json_response(data, status_code=status_code, headers=headers)
+
+
+def _request_context():
+    """Read only host-bound identity, never headers, query arguments or JSON flags."""
+    try:
+        from astrbot.api.web import PluginRequest, request
+    except ImportError:
+        pass
+    else:
+        try:
+            bound = request._get_current()
+        except RuntimeError:
+            pass
+        else:
+            if not isinstance(bound, PluginRequest):
+                raise PageError("unauthorized", "需要登录 AstrBot 管理面板。", 401)
+            return bound.username, bound.json
+    # Lazy imports keep unit tests independent of Quart and AstrBot startup.
+    try:
+        from quart import g, request
+
+        return getattr(g, "username", None), request.get_json
+    except (ImportError, RuntimeError):
+        raise PageError("unauthorized", "需要登录 AstrBot 管理面板。", 401) from None
+
+
+class PageAPI:
+    def __init__(self, context, config, active_settings: Settings, service):
+        self.context, self.config, self.service = context, config, service
+        self._active = deepcopy(active_settings.data)
+        self._revision_key = secrets.token_bytes(32)
+        self._lock = asyncio.Lock()
+        schema = json.loads((Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text("utf-8"))
+        self._fields = {
+            f"{section}.{key}": {
+                name: deepcopy(value) for name, value in entry.items() if name != "invisible"
+            }
+            for section, definition in schema.items()
+            for key, entry in definition["items"].items()
+        }
+
+    def _revision(self, values: dict) -> str:
+        return hmac.new(self._revision_key, _encoded(values), hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _public(values: dict) -> dict:
+        return {
+            section: {
+                key: deepcopy(values[section][key])
+                for key in defaults
+                if not _secret(f"{section}.{key}", values[section][key])
+            }
+            for section, defaults in DEFAULTS.items()
+        }
+
+    def snapshot(self) -> dict:
+        raw = deepcopy(dict(self.config))
+        effective = Settings(raw).data
+        changed = [
+            f"{section}.{key}"
+            for section, defaults in DEFAULTS.items()
+            for key in defaults
+            if effective[section][key] != self._active[section][key]
+        ]
+        secret_states = {}
+        fields = deepcopy(self._fields)
+        for section, defaults in DEFAULTS.items():
+            for key in defaults:
+                path, value = f"{section}.{key}", effective[section][key]
+                hidden = _secret(path, value) or _secret(path, self._active[section][key])
+                if hidden:
+                    secret_states[path] = {"configured": bool(_count(value)), "count": _count(value)}
+                    fields[path]["secret"] = True
+                    fields[path]["secret_update"] = True
+        return {
+            "values": self._public(effective),
+            "active_values": self._public(self._active),
+            "revision": self._revision(raw),
+            "needs_reload": bool(changed),
+            "changed_paths": changed,
+            "secrets": secret_states,
+            "fields": fields,
+        }
+
+    async def apply_patch(self, payload: dict) -> dict:
+        if (
+            not isinstance(payload, dict)
+            or set(payload) - {"revision", "patch", "secret_updates"}
+            or not isinstance(payload.get("revision"), str)
+            or not isinstance(payload.get("patch"), dict)
+            or not isinstance(payload.get("secret_updates", {}), dict)
+        ):
+            raise PageError("validation", "需要 revision、局部 patch 和可选 secret_updates。")
+        try:
+            _encoded(payload)
+        except (ValueError, TypeError, OverflowError):
+            raise PageError("validation", "配置必须是有效 JSON 值。") from None
+        async with self._lock:
+            before = deepcopy(dict(self.config))
+            if not re.fullmatch(r"[0-9a-f]{64}", payload["revision"]) or not hmac.compare_digest(
+                payload["revision"], self._revision(before)
+            ):
+                raise PageError("conflict", "配置版本冲突，请刷新后重试。", 409)
+            candidate = deepcopy(before)
+            effective = Settings(before).data
+            for section, patch in payload["patch"].items():
+                if section not in DEFAULTS or not isinstance(patch, dict):
+                    raise PageError("validation", "存在未知配置字段或错误的配置分组。")
+                for key, value in patch.items():
+                    if key not in DEFAULTS[section]:
+                        raise PageError("validation", "存在未知配置字段。")
+                    path, current = f"{section}.{key}", effective[section][key]
+                    if _secret(path, current) or _secret(path, value):
+                        raise PageError("secret_patch", "秘密字段必须通过 secret_updates 替换。")
+                    if isinstance(DEFAULTS[section][key], dict):
+                        if not isinstance(value, dict):
+                            raise PageError("validation", "字典配置必须是对象。")
+                        value = _merge_mapping(current if isinstance(current, dict) else {}, value)
+                        if _secret(path, value):
+                            raise PageError("secret_patch", "秘密字段必须通过 secret_updates 替换。")
+                    if _encoded(value) != _encoded(current):
+                        candidate.setdefault(section, {})[key] = deepcopy(value)
+            for path, value in payload.get("secret_updates", {}).items():
+                if path not in _REPLACEABLE:
+                    raise PageError("validation", "不支持替换此秘密字段。")
+                section, key = path.split(".")
+                default = DEFAULTS[section][key]
+                if key == "keys":
+                    valid = isinstance(value, list) and all(isinstance(item, str) for item in value)
+                else:
+                    valid = isinstance(value, type(default))
+                if not valid:
+                    raise PageError("validation", "秘密更新类型无效。")
+                if _encoded(value) != _encoded(effective[section][key]):
+                    candidate.setdefault(section, {})[key] = deepcopy(value)
+            try:
+                _validate(candidate)
+            except (ValueError, TypeError, OverflowError):
+                raise PageError("validation", "配置字段类型或范围无效。") from None
+            if candidate == before:
+                return self.snapshot()
+            try:
+                # AstrBot save_config merges into memory before writing to disk.
+                # Pass only the actual candidate; keep absent defaults and legacy keys intact.
+                self.config.save_config(deepcopy(candidate))
+                self.config.update(deepcopy(candidate))
+            except Exception:
+                self.config.clear()
+                self.config.update(before)
+                raise PageError("save_failed", "配置保存失败，内存配置已恢复。", 500) from None
+            return self.snapshot()
+
+    async def providers(self) -> dict:
+        providers = self.context.get_all_providers()
+        if inspect.isawaitable(providers):
+            providers = await providers
+        result = []
+        for provider in providers:
+            meta = provider.meta()
+            if inspect.isawaitable(meta):
+                meta = await meta
+            model = provider.get_model()
+            if inspect.isawaitable(model):
+                model = await model
+            provider_id = meta.id
+            if not isinstance(provider_id, str) or not isinstance(model, str):
+                raise PageError("providers_unavailable", "供应商元数据不可用。", 503)
+            result.append({"id": provider_id, "label": provider_id, "model": model})
+        return {"providers": result}
+
+    async def diagnostics(self) -> dict:
+        return await self.service.diagnostics_snapshot()
+
+    async def reset_capabilities(self, payload: dict) -> dict:
+        if not isinstance(payload, dict) or payload:
+            raise PageError("validation", "重置请求应为空对象。")
+        await self.service.capabilities.clear()
+        return {"reset": True}
+
+    def _protected(self, operation: str):
+        async def handler():
+            headers = {"Cache-Control": "no-store"}
+            try:
+                username, read_json = _request_context()
+                if not isinstance(username, str) or not username.strip():
+                    raise PageError("unauthorized", "需要登录 AstrBot 管理面板。", 401)
+                if operation == "settings":
+                    result = self.snapshot()
+                elif operation == "providers":
+                    result = await self.providers()
+                elif operation == "diagnostics":
+                    result = await self.diagnostics()
+                else:
+                    try:
+                        payload = await read_json()
+                    except Exception:
+                        raise PageError("validation", "请求必须包含有效 JSON 对象。") from None
+                    result = (
+                        await self.apply_patch(payload)
+                        if operation == "save"
+                        else await self.reset_capabilities(payload)
+                    )
+            except PageError as exc:
+                return _http_response(
+                    {"status": "error", "message": exc.message, "code": exc.code},
+                    status_code=exc.status,
+                    headers=headers,
+                )
+            except Exception:
+                return _http_response(
+                    {
+                        "status": "error",
+                        "message": "页面操作失败，详细错误已隐藏。",
+                        "code": "internal_error",
+                    },
+                    status_code=500,
+                    headers=headers,
+                )
+            return _http_response(result, headers=headers)
+
+        return handler
+
+    def register(self) -> None:
+        """Register protected APIs and aliases used by AstrBot's plugin page bridge.
+
+        The bridge prefixes the actual plugin name before endpoint strings.
+        Frontend endpoints remain ``openai-native/settings`` and its siblings.
+        """
+        routes = (
+            ("settings", "GET", "settings"),
+            ("settings", "POST", "save"),
+            ("providers", "GET", "providers"),
+            ("diagnostics", "GET", "diagnostics"),
+            ("capabilities/reset", "POST", "reset"),
+        )
+        for suffix, method, operation in routes:
+            handler = self._protected(operation)
+            for prefix in ("/openai-native", "/astrbot_plugin_openai_native/openai-native"):
+                self.context.register_web_api(
+                    f"{prefix}/{suffix}", handler, [method], "OpenAI Native 管理页面接口"
+                )

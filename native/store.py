@@ -113,6 +113,15 @@ class Store:
         async with self.lock:
             return self._row(await self._one("SELECT * FROM operations WHERE id=?", (operation_id,)))
 
+    async def list_images(self, actor: Actor, limit: int = 20):
+        """Only the caller's images in this exact session, including retained results."""
+        async with self.lock:
+            async with self.db.execute(
+                "SELECT * FROM operations WHERE kind='image' AND owner=? ORDER BY created DESC LIMIT ?",
+                (actor.owner_key, min(50, max(1, limit))),
+            ) as cur:
+                return [self._row(row) for row in await cur.fetchall()]
+
     async def reserve(
         self,
         *,

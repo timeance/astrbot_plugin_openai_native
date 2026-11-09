@@ -45,6 +45,7 @@ jobs:
     timeout-minutes: 15
     env:
       ASTRBOT_COMMIT: ${{ matrix.framework.commit }}
+      OPENAI_NATIVE_ASTRBOT_SOURCE: ${{ github.workspace }}/.framework-validation/AstrBot-${{ matrix.framework.commit }}
       OPENAI_NATIVE_REAL_ASTRBOT: '1'
       OPENAI_NATIVE_ASTRBOT_RUNTIME: ${{ github.workspace }}/.framework-validation/runtime
       ASTRBOT_ROOT: ${{ github.workspace }}/.framework-validation/runtime
@@ -94,9 +95,9 @@ jobs:
             -r .framework-validation/framework-import-requirements.txt \
             rich PyYAML pytest pytest-asyncio
           python -m pip check
-      - name: Real framework tool and message-hook registration (no paid APIs)
+      - name: Real framework registration and tool execution with simulated upstream
         working-directory: .framework-validation/runtime
         run: >-
-          python -m pytest "$GITHUB_WORKSPACE/tests/test_bridge.py" -q
+          python -m pytest "$GITHUB_WORKSPACE/tests/test_bridge.py" "$GITHUB_WORKSPACE/tests/test_real_execution.py" "$GITHUB_WORKSPACE/tests/test_page.py" -q
           --basetemp "$TMPDIR/pytest-real"
           -o "cache_dir=$ASTRBOT_ROOT/cache/pytest"

@@ -13,7 +13,16 @@ python -m ruff check .
 
 `tests/test_bridge.py` 使用明确的 AstrBot 4.29.4 契约替身，只能证明桥接逻辑；不能称为真实 AstrBot 加载、完整 Agent 或 QQ 集成通过。`tests/test_schema.py` 检查原生配置字段与运行默认值一致。
 
-可选真实注册检查：在已经具备 AstrBot 4.29.4 依赖的独立测试环境，将 AstrBot 源码放入 PYTHONPATH，设置 `OPENAI_NATIVE_REAL_ASTRBOT=1`，再运行 `python -m pytest tests/test_bridge.py -q`。此检查仅导入真实注册 API，不会提交计费请求。已在独立 Python 3.12 环境对固定 v4.29.4 源码完成检查，三个工具和图片缓存消息钩子均已注册；CI 分别对最低版本和研究时的 master 固定提交运行真实框架注册检查。完整 Agent 和聊天平台仍须实测。
+可选真实框架检查：在具备 AstrBot 依赖的独立环境，将固定 AstrBot 源码加入 `PYTHONPATH`，设置 `OPENAI_NATIVE_REAL_ASTRBOT=1`，运行：
+
+```console
+python -m pytest tests/test_bridge.py tests/test_real_execution.py tests/test_page.py -q
+```
+
+`tests/test_real_execution.py` 使用真实 `FunctionToolExecutor` 和权限包装，通过模拟 HTTP 走通搜索、Images 生成、multipart 编辑、原生 GIF、结果落盘和投递；不访问真实账号。它另验证人格禁用和权限拒绝。`tests/test_page.py` 检查保存冲突、失败回滚、秘密替换和能力清除；宿主路由检查基于指定源码的实际注册和请求绑定实现，可通过 `OPENAI_NATIVE_ASTRBOT_SOURCE` 指定源码目录。浏览器使用模拟宿主数据检查页面草稿与主题，不能称为真实 AstrBot 面板登录流程通过。
+
+CI 对最低版本 4.29.4 和固定 master 提交执行框架注册、执行器及配置接口检查。模型是否会在真实聊天中选择工具、网关账号支持情况和 QQ/GIF 显示仍需下表验收。
+
 
 ## 发布前真实验收
 
@@ -47,3 +56,10 @@ python -m ruff check .
 ## 交付状态
 
 项目以独立 Apache-2.0 源码交付到 timeance/astrbot_plugin_openai_native。完整第一版在本地验收后提交 Draft PR；发布与部署仍需单独授权。上表中没有实际账号证据的能力保持实验标记。
+
+
+## 0.1.1 本地开发版
+
+本轮新增固定 `/生图`、`/生动图`、`/生图任务`、`/生图取消`，修正无任务时仍暴露任务查询工具的问题，详细配置移至插件页面。原始搜索失败缺少上游错误证据，未断言已确认其原因；新版通过请求与执行诊断帮助定位。
+
+浏览器检查采用隔离 Edge 与模拟 bridge，覆盖深/浅主题、主题持久化、1440/768/390 像素五个分区、供应商选择、局部保存、手动重载提示、密钥显式替换、诊断刷新，以及冲突/保存失败保留草稿。没有发起真实计费请求。

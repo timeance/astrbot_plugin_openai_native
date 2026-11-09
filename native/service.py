@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import math
 import os
+import time
 import uuid
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -12,6 +13,7 @@ from .adapters import ImageAdapter, SearchAdapter
 from .assets import AssetStore, atomic_write
 from .capabilities import CapabilityRegistry
 from .config import Settings
+from .diagnostics import Diagnostics, connection_info, safe_error
 from .identity import actor_from_event
 from .models import (
     Artifact,
@@ -45,6 +47,11 @@ class NativeService:
         self.context, self.settings, self.root = context, settings, Path(data_dir)
         self.delivery = delivery
         self.tools_callback = None
+        self.diagnostics = Diagnostics()
+        self.last_readiness = {}
+        self.last_connections = {}
+        self.command_conflicts = []
+        self.command_conflicts_callback = None
         self.store = Store(self.root / "operations.sqlite3", settings)
         self.transport = HTTPTransport(settings, transport=transport)
         self.search_adapter = SearchAdapter(self.transport, settings)
@@ -148,7 +155,11 @@ class NativeService:
     async def _connection(self, event, feature):
         if not self.settings.feature(feature)["enabled"]:
             raise NativeError("disabled", "This feature is disabled")
-        return await self.resolver.resolve(event, feature)
+        connection = await self.resolver.resolve(event, feature)
+        if event is not None:
+            self.last_connections[feature] = connection
+        self.diagnostics.add(event, kind="connection", feature=feature, **connection_info(connection))
+        return connection
 
     async def _observe(self, connection, capability, state, reason, error=None):
         try:
@@ -174,7 +185,14 @@ class NativeService:
             state = "auth_blocked"
         else:
             state = "temporary_failure"
-        await self._observe(connection, capability, state, category, error.to_dict())
+        details = safe_error(error, connection)
+        await self._observe(connection, capability, state, category, details)
+        self.diagnostics.add(
+            kind="upstream_error",
+            capability=capability,
+            connection=connection_info(connection),
+            error=details,
+        )
 
     def _search_request(self, request):
         if not isinstance(request, SearchRequest) or not isinstance(request.queries, list):
@@ -256,6 +274,12 @@ class NativeService:
                 await self.store.update(operation_id, result=asdict(result))
                 await self.store.settle(operation_id, 1, 0, status="succeeded")
                 await self._observe(connection, "search", "available", "successful_request")
+                self.diagnostics.add(
+                    kind="search_result",
+                    operation_id=operation_id,
+                    status="succeeded",
+                    connection=connection_info(connection),
+                )
         except asyncio.CancelledError:
             await self.store.settle(
                 operation_id,
@@ -306,7 +330,9 @@ class NativeService:
                 raise NativeError("invalid_request", "Choose size or aspect ratio/resolution, not both")
             try:
                 w, h = map(int, (request.aspect_ratio or "1:1").split(":"))
-                edge = {"1K": 1024, "2K": 2048, "4K": 4096}[(request.resolution or "1K").upper()]
+                edge = {"1K": 1024, "1.5K": 1536, "2K": 2048, "4K": 4096}[
+                    (request.resolution or "1K").upper()
+                ]
                 if min(w, h) <= 0 or max(w, h) / min(w, h) > 8:
                     raise ValueError()
                 width, height = (edge, edge * h / w) if w >= h else (edge * w / h, edge)
@@ -420,6 +446,14 @@ class NativeService:
                         error={"category": "queue_full", "message": "Image queue is full"},
                     )
                     raise NativeError("queue_full", "Image queue is full") from exc
+        self.diagnostics.add(
+            event,
+            kind="image_submission",
+            task_id=op["id"],
+            status=op["status"],
+            created=created,
+            connection=connection_info(connection),
+        )
         return TaskHandle(op["id"], op["status"], asdict(request))
 
     async def _worker(self):
@@ -470,6 +504,15 @@ class NativeService:
                 operation_id, actual, 0, status="cancelled" if op["cancel_requested"] else "succeeded"
             )
             await self._deliver(operation_id)
+            final = await self.store.get(operation_id)
+            self.diagnostics.add(
+                kind="image_result",
+                task_id=operation_id,
+                status=final["status"],
+                generated=final["actual"],
+                delivery_status=final["delivery_status"],
+                connection=connection_info(connection),
+            )
         except asyncio.CancelledError:
             state = (
                 "needs_reconciliation" if unresolved else ("result_unavailable" if actual else "cancelled")
@@ -501,6 +544,14 @@ class NativeService:
             resolved = op["submitted_count"] if not pending else op["next_index"]
             await self.store.settle(
                 operation_id, actual, pending, status=state, error=error.to_dict(), next_index=resolved
+            )
+            self.diagnostics.add(
+                kind="image_result",
+                task_id=operation_id,
+                status=state,
+                generated=actual,
+                error=safe_error(error, connection),
+                connection=connection_info(connection),
             )
             if unresolved or not actual:
                 await self._record_error(connection, capability, error)
@@ -714,36 +765,187 @@ class NativeService:
         actor = actor_from_event(event)
         await self.assets.from_event(event, actor, current_only=True)
 
+    async def list_image_tasks(self, event, limit=20):
+        self._ready()
+        actor = actor_from_event(event)
+        rows = await self.store.list_images(actor, limit)
+        return [
+            {
+                "task_id": row["id"],
+                "status": row["status"],
+                "generated": row["actual"],
+                "requested": row["requested"],
+                "created": row["created"],
+            }
+            for row in rows
+        ]
+
+    async def _feature_readiness(self, event, feature, connection=None):
+        cfg = self.settings.feature(feature)
+        detail = {
+            "mode": cfg["mode"],
+            "configuration_ready": False,
+            "ready": False,
+            "tested": False,
+            "capabilities": {},
+            "reason": "",
+            "reason_code": "",
+        }
+        if not cfg["enabled"]:
+            return {**detail, "reason_code": "disabled", "reason": "此功能已关闭"}
+        if feature == "image" and (not isinstance(cfg["model"], str) or not cfg["model"].strip()):
+            return {**detail, "reason_code": "missing_image_model", "reason": "生图尚未就绪：请填写图片模型"}
+        if cfg["mode"] == "current" and event is None and connection is None:
+            return {**detail, "reason_code": "awaiting_session", "reason": "等待会话验证"}
+        try:
+            connection = connection or await self._connection(event, feature)
+        except NativeError as exc:
+            return {**detail, "reason_code": exc.category, "reason": exc.message, "error": safe_error(exc)}
+        detail.update(connection_info(connection))
+        detail["configuration_ready"] = True
+        formats, actions = [], []
+        names = (
+            ["search"]
+            if feature == "search"
+            else [action + ":" + fmt for action in ("generate", "edit") for fmt in cfg["formats"]]
+        )
+        for name in names:
+            if name.endswith(":gif") and (
+                not self.settings.gif["enabled"] or connection.protocol != "images"
+            ):
+                detail["capabilities"][name] = {
+                    "status": "disabled",
+                    "reason": "GIF 未启用" if not self.settings.gif["enabled"] else "GIF 需要 Images 协议",
+                }
+                continue
+            row = await self.capabilities.get(connection, name)
+            detail["capabilities"][name] = row
+            if row["status"] in {"unsupported", "auth_blocked"}:
+                continue
+            detail["ready"] = True
+            if feature == "image":
+                action, fmt = name.split(":")
+                if action not in actions:
+                    actions.append(action)
+                if fmt not in formats:
+                    formats.append(fmt)
+        detail["tested"] = any(row["status"] == "available" for row in detail["capabilities"].values())
+        if not detail["ready"]:
+            blocked = [
+                row
+                for row in detail["capabilities"].values()
+                if row["status"] in {"unsupported", "auth_blocked"}
+            ]
+            first = blocked[0] if blocked else {}
+            message = first.get("error", {}).get("message") or first.get("reason")
+            detail.update(
+                reason_code=first.get("status", "capability_blocked"),
+                reason=("能力不可用：" + message)
+                if message
+                else "没有启用的可用格式，请检查格式、GIF 开关和协议",
+            )
+        elif not detail["tested"]:
+            detail.update(reason_code="unverified", reason="配置就绪，账号能力尚未实测")
+        detail.update(formats=formats, actions=actions)
+        return detail
+
     async def available_tools(self, event):
         self._ready()
-        actor_from_event(event)
-        result = {"search": False, "image": False, "formats": [], "actions": []}
-        try:
-            connection = await self._connection(event, "search")
-            await self.capabilities.ensure(connection, "search")
-            result["search"] = True
-        except NativeError:
-            pass
-        try:
-            connection = await self._connection(event, "image")
-            for action in ("generate", "edit"):
-                for output in self.settings.feature("image")["formats"]:
-                    if output == "gif" and (
-                        not self.settings.gif["enabled"] or connection.protocol != "images"
-                    ):
-                        continue
-                    try:
-                        await self.capabilities.ensure(connection, action + ":" + output)
-                    except NativeError:
-                        continue
-                    if output not in result["formats"]:
-                        result["formats"].append(output)
-                    if action not in result["actions"]:
-                        result["actions"].append(action)
-            result["image"] = bool(result["formats"])
-        except NativeError:
-            pass
-        return result
+        actor = actor_from_event(event)
+        details = {}
+        for feature in ("search", "image"):
+            try:
+                details[feature] = await self._feature_readiness(event, feature)
+            except NativeError as exc:
+                details[feature] = {
+                    "ready": False,
+                    "configuration_ready": False,
+                    "tested": False,
+                    "reason_code": exc.category,
+                    "reason": exc.message,
+                    "error": safe_error(exc),
+                }
+            if not details[feature].get("configuration_ready"):
+                self.last_connections.pop(feature, None)
+            self.last_readiness[feature] = {**details[feature], "observed_at": time.time()}
+        tasks = await self.store.list_images(actor, 1)
+        return {
+            "search": details["search"]["ready"],
+            "image": details["image"]["ready"],
+            "image_task": bool(tasks),
+            "formats": details["image"].get("formats", []),
+            "actions": details["image"].get("actions", []),
+            "details": details,
+        }
+
+    def record_tool_call(self, event, name, state, *, result=None, error=None):
+        record = {"kind": "tool_execution", "tool": name, "state": state}
+        if result is not None:
+            data = result.to_dict() if hasattr(result, "to_dict") else result
+            if isinstance(data, dict):
+                record.update(
+                    {key: data[key] for key in ("task_id", "operation_id", "status") if key in data}
+                )
+        if error is not None:
+            record["error"] = safe_error(error)
+        self.diagnostics.add(event, **record)
+
+    def record_request(self, event, before, after, available, inactive=()):
+        reasons = {}
+        for name, feature in (
+            ("openai_web_search", "search"),
+            ("openai_image", "image"),
+            ("openai_image_task", "image_task"),
+        ):
+            if name not in before:
+                reasons[name] = {"code": "not_in_request", "message": "未进入当前请求，请检查人格和工具开关"}
+            elif name in inactive:
+                reasons[name] = {"code": "inactive", "message": "AstrBot 已停用此工具"}
+            elif name not in after:
+                detail = available.get("details", {}).get(feature, {})
+                reasons[name] = {
+                    "code": detail.get(
+                        "reason_code", "no_current_tasks" if feature == "image_task" else "unavailable"
+                    ),
+                    "message": detail.get(
+                        "reason",
+                        "当前用户在此会话没有图片任务" if feature == "image_task" else "功能尚未就绪",
+                    ),
+                }
+        self.diagnostics.add(
+            event,
+            kind="request",
+            tools_before=before,
+            tools_after=after,
+            hidden=reasons,
+            features=available.get("details", {}),
+        )
+
+    async def diagnostics_snapshot(self):
+        self._ready()
+        if callable(self.command_conflicts_callback):
+            self.command_conflicts_callback()
+        features = {}
+        for feature in ("search", "image"):
+            if self.settings.feature(feature)["mode"] == "current" and feature in self.last_readiness:
+                latest = self.last_readiness[feature]
+                conn = self.last_connections.get(feature)
+                features[feature] = (
+                    {
+                        **(await self._feature_readiness(None, feature, conn)),
+                        "observed_at": latest["observed_at"],
+                    }
+                    if conn
+                    else latest
+                )
+            else:
+                features[feature] = await self._feature_readiness(None, feature)
+        return {
+            "features": features,
+            "recent": self.diagnostics.snapshot(),
+            "command_conflicts": self.command_conflicts,
+            "notice": "配置检查不调用付费接口；真实账号通过情况来自已完成请求。",
+        }
 
     async def status(self, event):
         self._ready()
@@ -775,6 +977,7 @@ class NativeService:
                 }
             except NativeError as exc:
                 result[feature] = {"error": exc.to_dict()}
+        result["diagnostics"] = await self.diagnostics_snapshot()
         return result
 
     async def probe(self, event, capability, confirm_paid=False):

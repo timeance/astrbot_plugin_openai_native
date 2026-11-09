@@ -41,3 +41,10 @@ LLM 参数只包含请求内容，不允许身份、管理员标记、密钥、�
 ## 验证边界
 
 自动化测试使用本地协议模拟及真实 SQLite，并单独验证固定版本 AstrBot 的工具注册。真实账号、网关渠道、完整 Angel Heart 聊天及 QQ/NapCat 显示按 `VALIDATION.md` 实测；源码和注册通过不代表这些项目已经验收。
+
+
+## 页面和命令
+
+`native/page.py` 通过 AstrBot 受保护的插件 Web API 提供配置快照、带版本的局部保存、脱敏 Provider 列表、诊断及能力清除。`pages/dashboard` 只使用本地静态资源和宿主页桥接；页面不建立独立服务端口。已保存配置与启动时的 `Settings` 分离，手动重载后才应用。
+
+`native/commands.py` 只解析文本，不执行 shell；固定命令和 `/onative image|gif` 直接调用同一 `NativeService.submit_image` 并停止事件进入聊天 Agent。工具继续由标准 Function Calling 执行。`native/diagnostics.py` 保存有界、无聊天正文的关联记录。

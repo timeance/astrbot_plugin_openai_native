@@ -12,9 +12,11 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.agent.tool import ToolSet
 
+from .native.commands import parse_image_command
 from .native.config import Settings
 from .native.identity import actor_from_event
 from .native.models import Artifact, ImageRequest, NativeError, SearchRequest
+from .native.page import PageAPI
 from .native.service import NativeService
 
 PLUGIN_NAME = "astrbot_plugin_openai_native"
@@ -46,6 +48,8 @@ def filter_tool_set(original: ToolSet, available: dict, settings: Settings) -> T
         formats = list(available.get("formats", []))
         actions = list(available.get("actions", []))
         if name == "openai_image" and (not available.get("image") or not formats or not actions):
+            continue
+        if name == "openai_image_task" and not available.get("image_task"):
             continue
         target = copy(tool)
         target.parameters = deepcopy(tool.parameters or {"type": "object", "properties": {}})
@@ -80,17 +84,20 @@ def filter_tool_set(original: ToolSet, available: dict, settings: Settings) -> T
     PLUGIN_NAME,
     "OpenAI Native contributors",
     "OpenAI 原生搜索、生图、编辑和 GIF",
-    "0.1.0",
+    "0.1.1",
     "https://github.com/timeance/astrbot_plugin_openai_native",
 )
 class OpenAINativePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+        self.config = config
         self.settings = Settings(dict(config))
         self.service = NativeService(
             context, self.settings, StarTools.get_data_dir(PLUGIN_NAME), delivery=self._deliver
         )
         self.service.tools_callback = self.build_tools
+        self.service.command_conflicts_callback = self._check_command_conflicts
+        self.page_api = PageAPI(context, config, self.settings, self.service)
 
     @property
     def public_api(self):
@@ -98,6 +105,8 @@ class OpenAINativePlugin(Star):
 
     async def initialize(self):
         await self.service.initialize()
+        self.page_api.register()
+        self._check_command_conflicts()
 
     async def terminate(self):
         await self.service.close()
@@ -141,19 +150,53 @@ class OpenAINativePlugin(Star):
             # Invalid/animated input must not stop ordinary chatting.
             pass
 
+    def _check_command_conflicts(self):
+        from astrbot.core.star.star_handler import EventType, star_handlers_registry
+
+        conflicts = []
+        names = {"生图", "生动图", "生图任务", "生图取消"}
+        for handler in star_handlers_registry.get_handlers_by_event_type(EventType.AdapterMessageEvent):
+            if handler.handler_module_path == self.__class__.__module__:
+                continue
+            for rule in handler.event_filters:
+                command = getattr(rule, "command_name", None)
+                aliases = getattr(rule, "alias", set())
+                for name in names.intersection({command, *aliases}):
+                    conflicts.append({"command": "/" + name, "plugin": handler.handler_module_path})
+        self.service.command_conflicts = conflicts
+
+    def _trace_tool(self, event, name, state, **kwargs):
+        recorder = getattr(self.service, "record_tool_call", None)
+        if callable(recorder):
+            recorder(event, name, state, **kwargs)
+
     @filter.on_llm_request(priority=0)
     async def on_llm_request(self, event: AstrMessageEvent, req):
-        if req.func_tool is None:
-            event.set_extra(TOOL_SNAPSHOT, ToolSet())
-            return
-        snapshot = copy(req.func_tool)
-        snapshot.tools = list(req.func_tool.tools)
+        snapshot = copy(req.func_tool) if req.func_tool is not None else ToolSet()
+        snapshot.tools = list(req.func_tool.tools) if req.func_tool is not None else []
         event.set_extra(TOOL_SNAPSHOT, snapshot)
         try:
             available = await self.service.available_tools(event)
-        except NativeError:
-            available = {"search": False, "image": False, "formats": [], "actions": []}
-        req.func_tool = filter_tool_set(req.func_tool, available, self.settings)
+        except NativeError as exc:
+            available = {
+                "search": False,
+                "image": False,
+                "image_task": False,
+                "details": {
+                    name: {"reason_code": exc.category, "reason": exc.message} for name in ("search", "image")
+                },
+            }
+        if req.func_tool is not None:
+            req.func_tool = filter_tool_set(req.func_tool, available, self.settings)
+        recorder = getattr(self.service, "record_request", None)
+        if callable(recorder):
+            recorder(
+                event,
+                [t.name for t in snapshot.tools if t.name in TOOL_NAMES],
+                [t.name for t in req.func_tool.tools if t.name in TOOL_NAMES] if req.func_tool else [],
+                available,
+                [t.name for t in snapshot.tools if not getattr(t, "active", True)],
+            )
 
     @filter.llm_tool(name="openai_web_search")
     async def web_search(
@@ -172,6 +215,7 @@ class OpenAINativePlugin(Star):
             recency(int): 只搜索最近多少天；0 表示不限制。
             domains(array[string]): 可选的域名范围。
         """
+        self._trace_tool(event, "openai_web_search", "started")
         try:
             request = SearchRequest(
                 queries=queries,
@@ -179,8 +223,11 @@ class OpenAINativePlugin(Star):
                 recency=recency or None,
                 domains=domains or [],
             )
-            return _json(await self.service.search(event, request))
+            result = await self.service.search(event, request)
+            self._trace_tool(event, "openai_web_search", "completed", result=result)
+            return _json(result)
         except NativeError as exc:
+            self._trace_tool(event, "openai_web_search", "failed", error=exc)
             return _json({"error": exc.to_dict()})
 
     @filter.llm_tool(name="openai_image")
@@ -200,7 +247,7 @@ class OpenAINativePlugin(Star):
         frame_count: int | None = None,
         frame_duration_ms: int | None = None,
     ) -> str:
-        """提交图片生成或编辑，立即返回任务 ID，完成后由插件后台发送。GIF 是上游原生动画。
+        """创建新图片或原生 GIF、编辑参考图时调用本工具。立即返回任务 ID，完成后后台发送。
 
         Args:
             prompt(string): 画面或编辑说明；GIF 可描述动作和循环。
@@ -216,6 +263,7 @@ class OpenAINativePlugin(Star):
             frame_count(int): GIF 帧数，2 至 16；省略使用配置。
             frame_duration_ms(int): GIF 每帧毫秒，20 至 2000；省略使用配置。
         """
+        self._trace_tool(event, "openai_image", "started")
         try:
             refs = references or []
             if any(not isinstance(ref, str) or not ref or any(c in ref for c in "/\\:.") for ref in refs):
@@ -234,41 +282,153 @@ class OpenAINativePlugin(Star):
                 frame_count=frame_count,
                 frame_duration_ms=frame_duration_ms,
             )
-            return _json(await self.service.submit_image(event, request, deliver=True))
+            result = await self.service.submit_image(event, request, deliver=True)
+            self._trace_tool(event, "openai_image", "accepted", result=result)
+            return _json(result)
         except NativeError as exc:
+            self._trace_tool(event, "openai_image", "failed", error=exc)
             return _json({"error": exc.to_dict()})
 
     @filter.llm_tool(name="openai_image_task")
     async def image_task(self, event: AstrMessageEvent, task_id: str, operation: str = "status") -> str:
-        """查询或取消自己在当前会话创建的图片任务；取消不保证上游停止计费。
+        """仅查询或取消已取得任务 ID 的图片任务。不能创建图片；新建请用 openai_image。取消不保证免费。
 
         Args:
             task_id(string): 提交工具返回的任务 ID。
             operation(string): status 或 cancel。
         """
+        self._trace_tool(event, "openai_image_task", "started")
         try:
             if operation == "status":
-                return _json(await self.service.public_api.get_task(event, task_id))
-            if operation == "cancel":
-                return _json(await self.service.public_api.cancel_task(event, task_id))
-            raise NativeError("validation", "operation must be status or cancel")
+                result = await self.service.public_api.get_task(event, task_id)
+            elif operation == "cancel":
+                result = await self.service.public_api.cancel_task(event, task_id)
+            else:
+                raise NativeError("validation", "operation must be status or cancel")
+            self._trace_tool(event, "openai_image_task", "completed", result=result)
+            return _json(result)
         except NativeError as exc:
+            self._trace_tool(event, "openai_image_task", "failed", error=exc)
             return _json({"error": exc.to_dict()})
+
+    @staticmethod
+    def _command_tail(event, name):
+        text = event.get_message_str().strip()
+        index = next((i for i, token in enumerate(text.split()) if token.lstrip("/") == name), None)
+        if index is None:
+            return ""
+        pieces = text.split(maxsplit=index + 1)
+        return pieces[index + 1] if len(pieces) > index + 1 else ""
+
+    @staticmethod
+    def _friendly_error(exc):
+        steps = {
+            "configuration": "请在插件页面检查供应商和模型，保存后重载插件。",
+            "disabled": "请让管理员在插件页面启用对应功能，保存后重载插件。",
+            "quota_exceeded": "今日额度不足，请稍后再试或联系管理员。",
+            "queue_full": "等待队列已满，请稍后再试。",
+            "rate_limited": "调用过于频繁或已有任务，请先查询 /生图任务。",
+            "auth_blocked": "请让管理员核查账号权限，修正后清除旧能力记录。",
+            "unsupported": "请让管理员检查协议、模型及账号支持情况。",
+            "not_found": "请使用本人在当前会话创建的任务 ID。",
+        }
+        suffix = steps.get(exc.category, "")
+        return f"{exc.message}\n{suffix}".strip()
+
+    async def _submit_command(self, event, text, *, animated=False):
+        event.stop_event()
+        try:
+            request = parse_image_command(text, animated=animated)
+            self._trace_tool(event, "command:生动图" if animated else "command:生图", "started")
+            task = await self.service.submit_image(event, request, deliver=True)
+            self._trace_tool(event, "command:image", "accepted", result=task)
+            value = task.to_dict() if hasattr(task, "to_dict") else task
+            return f"已接受{'动图' if animated else '生图'}任务，正在排队或生成。\n任务 ID：{value['task_id']}\n完成后自动发送，可用 /生图任务 {value['task_id']} 查询。"
+        except NativeError as exc:
+            self._trace_tool(event, "command:image", "failed", error=exc)
+            return self._friendly_error(exc)
+
+    @filter.command("生图")
+    async def image_command(self, event: AstrMessageEvent):
+        yield event.plain_result(await self._submit_command(event, self._command_tail(event, "生图")))
+
+    @filter.command("生动图")
+    async def gif_command(self, event: AstrMessageEvent):
+        yield event.plain_result(
+            await self._submit_command(event, self._command_tail(event, "生动图"), animated=True)
+        )
+
+    async def _task_command(self, event, task_id):
+        event.stop_event()
+        if not task_id.strip():
+            rows = await self.service.list_image_tasks(event)
+            if not rows:
+                return "你在当前会话还没有图片任务。使用 /生图 或 /生动图 创建。"
+            return "当前会话的图片任务：\n" + "\n".join(
+                f"{row['task_id']} · {self._state_label(row['status'])} · {row['generated']}/{row['requested']} 张"
+                for row in rows
+            )
+        result = await self.service.public_api.get_task(event, task_id.strip())
+        if result.get("kind", "image") != "image":
+            raise NativeError("invalid_request", "这不是生图任务 ID。")
+        message = f"任务 ID：{result['task_id']}\n状态：{self._state_label(result['status'])}\n已生成：{result.get('generated', 0)}/{result.get('requested', 0)} 张"
+        if result.get("error"):
+            message += "\n原因：" + result["error"].get("message", "执行失败")
+        if result.get("held") and result["status"] == "needs_reconciliation":
+            message += "\n上游完成情况未知，额度暂保留，请管理员核对；请勿重复提交。"
+        if result.get("delivery_status") in {"unknown", "unavailable_after_restart"}:
+            message += "\n结果投递未确认，请管理员查看任务结果；无需重新生成。"
+        return message
+
+    @staticmethod
+    def _state_label(state):
+        return {
+            "queued": "排队中",
+            "running": "生成中",
+            "receiving": "接收结果中",
+            "succeeded": "已完成",
+            "partial": "部分完成",
+            "failed": "失败",
+            "cancel_requested": "已申请取消",
+            "cancelled": "已取消",
+            "needs_reconciliation": "待管理员核对",
+            "result_unavailable": "结果暂不可取",
+        }.get(state, state)
+
+    @filter.command("生图任务")
+    async def task_command(self, event: AstrMessageEvent):
+        event.stop_event()
+        try:
+            result = await self._task_command(event, self._command_tail(event, "生图任务"))
+        except NativeError as exc:
+            result = self._friendly_error(exc)
+        yield event.plain_result(result)
+
+    async def _cancel_command(self, event, task_id):
+        event.stop_event()
+        if not task_id.strip():
+            raise NativeError("invalid_request", "用法：/生图取消 <任务ID>")
+        result = await self.service.public_api.cancel_task(event, task_id.strip())
+        if not result["accepted"]:
+            return f"任务 {task_id.strip()} 已结束，无需取消。"
+        return f"已申请取消任务 {task_id.strip()}。排队任务会释放额度；已提交上游的任务仍按实际结果结算。"
+
+    @filter.command("生图取消")
+    async def cancel_command(self, event: AstrMessageEvent):
+        event.stop_event()
+        try:
+            result = await self._cancel_command(event, self._command_tail(event, "生图取消"))
+        except NativeError as exc:
+            result = self._friendly_error(exc)
+        yield event.plain_result(result)
 
     @filter.command("onative")
     async def command(self, event: AstrMessageEvent):
-        # Parse the original message, preserving prompts with spaces without shell parsing.
-        text = event.get_message_str().strip()
-        command_token = next(
-            (i for i, token in enumerate(text.split()) if token.lstrip("/") == "onative"), None
-        )
-        if command_token is None:
-            args = ""
-        else:
-            args = text.split(maxsplit=command_token + 1)[command_token + 1 :]  # wake prefix is permitted
-            args = args[0] if args else ""
-        operation, _, remainder = args.partition(" ")
-        operation = operation or "status"
+        event.stop_event()
+        args = self._command_tail(event, "onative")
+        parts = args.split(maxsplit=1)
+        operation = parts[0] if parts else "status"
+        remainder = parts[1] if len(parts) > 1 else ""
         try:
             actor = actor_from_event(event)
             if operation in {"status", "probe", "retry-download", "reconcile"} and not actor.is_admin:
@@ -278,17 +438,18 @@ class OpenAINativePlugin(Star):
             elif operation == "probe":
                 parts = remainder.split()
                 capability = parts[0] if parts else "search"
-                confirm = len(parts) == 2 and parts[1] == "confirm"
-                if not confirm:
+                if len(parts) != 2 or parts[1] != "confirm":
                     result = {
                         "message": "能力探测可能计费。明确执行 /onative probe <能力> confirm 才会发起。"
                     }
                 else:
                     result = await self.service.probe(event, capability, confirm_paid=True)
             elif operation == "task":
-                result = await self.service.public_api.get_task(event, remainder.strip())
+                yield event.plain_result(await self._task_command(event, remainder))
+                return
             elif operation == "cancel":
-                result = await self.service.public_api.cancel_task(event, remainder.strip())
+                yield event.plain_result(await self._cancel_command(event, remainder))
+                return
             elif operation == "quota":
                 result = await self.service.quota(event)
             elif operation == "retry-download":
@@ -307,18 +468,19 @@ class OpenAINativePlugin(Star):
             elif operation == "search":
                 yield event.plain_result(await self.web_search(event, [remainder.strip()]))
                 return
-            elif operation == "image":
-                yield event.plain_result(await self.image(event, remainder.strip()))
+            elif operation in {"image", "gif"}:
+                yield event.plain_result(
+                    await self._submit_command(event, remainder, animated=operation == "gif")
+                )
                 return
             else:
                 result = {
-                    "commands": "status | probe <能力> confirm | task <ID> | cancel <ID> | quota | "
-                    "retry-download <ID> | reconcile <ID> <实际文件数> | search <搜索词> | image <提示词>"
+                    "commands": "status | probe <能力> confirm | task [ID] | cancel <ID> | quota | "
+                    "retry-download <ID> | reconcile <ID> <实际文件数> | search <搜索词> | image <提示词> | gif <提示词>"
                 }
             yield event.plain_result(_json(result))
         except NativeError as exc:
             yield event.plain_result(_json({"error": exc.to_dict()}))
         except Exception:
-            # Never echo exception text: third-party transports may embed credentials.
             logger.error("OpenAI Native command failed; exception details suppressed")
             yield event.plain_result("操作失败，请查看任务状态；请勿重复提交可能已执行的生成请求。")

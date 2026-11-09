@@ -1,0 +1,105 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>OpenAI 原生能力 · 配置与诊断</title>
+  <link rel="stylesheet" href="./app.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="dashboard">
+    <header class="page-header">
+      <div class="heading">
+        <p class="eyebrow">OPENAI NATIVE</p>
+        <h1>原生能力</h1>
+        <p class="subtitle">分别配置网页搜索、图片生成与 GIF，查看实际调用状态。</p>
+      </div>
+      <div class="header-controls">
+        <span id="connection-state" class="badge">连接宿主中</span>
+        <label class="theme-control" for="theme">主题
+          <select id="theme">
+            <option value="host">跟随宿主</option>
+            <option value="dark">深色</option>
+            <option value="light">浅色</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="配置分区">
+      <button type="button" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" data-tab="overview">概览</button>
+      <button type="button" role="tab" id="tab-search" aria-controls="panel-search" aria-selected="false" tabindex="-1" data-tab="search">网页搜索</button>
+      <button type="button" role="tab" id="tab-image" aria-controls="panel-image" aria-selected="false" tabindex="-1" data-tab="image">生图与 GIF</button>
+      <button type="button" role="tab" id="tab-limits" aria-controls="panel-limits" aria-selected="false" tabindex="-1" data-tab="limits">额度与任务</button>
+      <button type="button" role="tab" id="tab-advanced" aria-controls="panel-advanced" aria-selected="false" tabindex="-1" data-tab="advanced">高级设置</button>
+    </nav>
+
+    <main>
+      <div id="notice" class="notice" role="status" aria-live="polite">正在读取配置。保存只持久化，手动重载插件后生效。</div>
+      <div class="recovery-actions">
+        <button type="button" id="retry-load" class="button small" hidden>重新连接并读取配置</button>
+        <button type="button" id="refresh-settings" class="button small" hidden>读取最新配置并保留草稿</button>
+      </div>
+      <div id="validation-summary" class="notice error" role="alert" tabindex="-1" hidden></div>
+
+      <form id="settings-form" novalidate autocomplete="off">
+        <fieldset id="editor" disabled>
+          <legend class="sr-only">插件配置与诊断</legend>
+          <section id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview">
+            <div class="section-heading">
+              <div><h2>运行概况</h2><p>依据运行配置与已有记录判断；刷新不会调用付费模型，也不会覆盖草稿。</p></div>
+              <button type="button" class="button" id="refresh-diagnostics">刷新诊断</button>
+            </div>
+            <div id="diagnostic-status" class="inline-status" role="status">正在读取运行状态…</div>
+            <div id="readiness-grid" class="readiness-grid"></div>
+            <section class="surface">
+              <div class="section-heading compact"><div><h3>配置与生效</h3><p id="runtime-state">尚未读取配置。</p></div><span id="revision-label" class="meta"></span></div>
+              <div id="runtime-diff"></div>
+            </section>
+            <section class="surface">
+              <div class="section-heading compact"><div><h3>最近工具诊断</h3><p>只显示有界记录中的状态与脱敏错误，不展示聊天正文。</p></div></div>
+              <div id="recent-records" class="empty-state">尚无诊断记录。</div>
+              <div id="command-conflicts"></div>
+            </section>
+            <section class="surface">
+              <div class="section-heading compact"><div><h3>检查与实测</h3><p>复制后由管理员在目标会话主动发送。标有「可能计费」的命令会发起真实请求。</p></div></div>
+              <div id="test-commands" class="command-list"></div>
+              <div class="reset-row"><div><strong>清除旧能力记录</strong><p class="hint">只重置能力判断；不会发起搜索、生图或付费探测。重置后需重新验证。</p></div><button type="button" class="button" id="reset-capabilities">重置能力记录</button></div>
+            </section>
+          </section>
+
+          <section id="panel-search" class="tab-panel" role="tabpanel" aria-labelledby="tab-search" hidden>
+            <div class="section-heading"><div><h2>网页搜索</h2><p>独立选择搜索连接；请求提交时固定供应商，不跟随聊天 fallback。</p></div></div>
+            <div id="search-fields"></div>
+          </section>
+
+          <section id="panel-image" class="tab-panel" role="tabpanel" aria-labelledby="tab-image" hidden>
+            <div class="section-heading"><div><h2>生图与 GIF</h2><p>图片模型需明确配置。原生 GIF 还取决于接口、渠道与账号能力。</p></div></div>
+            <div id="image-model-warning" class="notice warning">图片模型未配置：生图尚未就绪，仍可保存其他设置。</div>
+            <div id="image-fields"></div>
+          </section>
+
+          <section id="panel-limits" class="tab-panel" role="tabpanel" aria-labelledby="tab-limits" hidden>
+            <div class="section-heading"><div><h2>额度与任务</h2><p>设置每日额度、请求频率、排队与保存期限。</p></div></div>
+            <div id="limits-fields"></div>
+          </section>
+
+          <section id="panel-advanced" class="tab-panel" role="tabpanel" aria-labelledby="tab-advanced" hidden>
+            <div class="section-heading"><div><h2>高级设置</h2><p>按功能调整连接参数。供应商模式继承其地址与凭据，手动 API 在对应功能分区配置。</p></div></div>
+            <div id="advanced-fields"></div>
+          </section>
+        </fieldset>
+
+        <footer class="save-bar">
+          <div><strong id="draft-state" aria-live="polite">配置未加载</strong><p id="save-hint">保存后请在 AstrBot 插件管理中手动重载。</p></div>
+          <button type="submit" class="button primary" id="save" disabled>保存配置</button>
+        </footer>
+      </form>
+      <noscript><p class="notice error">请启用 JavaScript 后使用此页面。</p></noscript>
+    </main>
+  </div>
+</body>
+</html>

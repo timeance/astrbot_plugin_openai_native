@@ -260,6 +260,22 @@ class CapabilityRegistry:
             except FileNotFoundError:
                 pass
 
+    async def clear(self) -> None:
+        """Clear saved observations without resolving connections or probing upstream."""
+        async with self._lock:
+            await self._load_locked()
+            try:
+                save = asyncio.create_task(asyncio.to_thread(self._write, {}))
+                try:
+                    await asyncio.shield(save)
+                except asyncio.CancelledError:
+                    await save
+                    self._records = {}
+                    raise
+            except (OSError, ValueError):
+                raise NativeError("storage", "Capability registry could not be saved") from None
+            self._records = {}
+
     async def reset(self, conn: Connection, capability: str) -> None:
         """Clear a blocking observation before an administrator's explicit paid probe.
 
