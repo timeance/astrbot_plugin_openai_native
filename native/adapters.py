@@ -261,7 +261,7 @@ class SearchAdapter:
             queries=list(request.queries),
             sources=hits,
             backend_synthesis=_model_text(payload["output"]),
-            usage=_usage(payload),
+            usage={**_usage(payload), "observed_web_search_calls": len(calls)},
             untrusted=True,
         )
 

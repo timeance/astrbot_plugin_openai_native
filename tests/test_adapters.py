@@ -483,3 +483,20 @@ async def test_image_adapter_enforces_decoded_byte_limit():
             connection(), image_request(), []
         )
     assert caught.value.ambiguous and len(transport.calls) == 1
+
+
+async def test_responses_search_records_observed_tool_calls_without_claiming_billable_count():
+    payload = {
+        "status": "completed",
+        "output": [
+            {"type": "web_search_call", "status": "completed", "action": {"type": "search"}},
+            {"type": "web_search_call", "status": "completed", "action": {"type": "open_page"}},
+        ],
+        "usage": {"input_tokens": 42},
+    }
+    transport = RecordingTransport(payload)
+    result = await SearchAdapter(transport, Settings()).search(
+        connection(model="search", protocol="responses"), SearchRequest(["query"]), "operation"
+    )
+    assert result.usage == {"input_tokens": 42, "observed_web_search_calls": 2}
+    assert len(transport.calls) == 1
