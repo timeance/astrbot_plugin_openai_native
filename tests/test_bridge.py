@@ -30,6 +30,9 @@ class Event:
         self.extra = {}
         self.send = AsyncMock()
 
+    def stop_event(self):
+        self.stopped = True
+
     def get_sender_id(self):
         return self.sender
 
@@ -384,3 +387,63 @@ async def test_current_image_cache_hook_never_replies(plugin, outcome):
     else:
         plugin.service.remember_images.assert_awaited_once_with(event)
     event.send.assert_not_called()
+
+
+def test_task_tool_requires_own_session_history(bridge):
+    task = Tool("openai_image_task", {"properties": {"operation": {"type": "string"}}})
+    original = ToolSet([image_tool(), task])
+    assert bridge.filter_tool_set(original, {"image": False, "image_task": False}, Settings()).tools == []
+    result = bridge.filter_tool_set(original, {"image": False, "image_task": True}, Settings())
+    assert [item.name for item in result.tools] == ["openai_image_task"]
+    assert result.tools[0]._wrapped is task._wrapped
+
+
+async def test_fixed_commands_stop_agent_and_share_submission(plugin):
+    for method, text, animated in (
+        ("image_command", "/生图 一只柴犬 16:9 2K 2", False),
+        ("gif_command", "/生动图 小狗摇尾巴 --帧数 4 --帧时长 100", True),
+        ("command", "/onative image 一只柴犬 --数量 2", False),
+    ):
+        event = Event(text=text)
+        plugin.service.submit_image.reset_mock()
+        replies = [item async for item in getattr(plugin, method)(event)]
+        assert event.stopped
+        plugin.service.submit_image.assert_awaited_once()
+        request = plugin.service.submit_image.call_args.args[1]
+        assert (request.output_format == "gif") == animated
+        assert plugin.service.submit_image.call_args.kwargs == {"deliver": True}
+        assert "任务 ID：id" in replies[0]
+
+
+async def test_command_invalid_parameters_do_not_submit(plugin):
+    for text in ("/生图", "/生图 狗 --数量 9", "/生图 狗 --格式 gif", "/生图 狗 --尺寸 100x100 --比例 1:1"):
+        event = Event(text=text)
+        replies = [item async for item in plugin.image_command(event)]
+        assert event.stopped
+        assert replies and "任务 ID" not in replies[0]
+    plugin.service.submit_image.assert_not_called()
+
+
+async def test_empty_request_and_missing_tools_are_diagnosed(plugin, bridge):
+    plugin.service.record_request = lambda *args: calls.append(args)
+    calls = []
+    event = Event()
+    req = SimpleNamespace(func_tool=None)
+    await plugin.on_llm_request(event, req)
+    assert req.func_tool is None
+    assert calls[0][1:3] == ([], [])
+    req.func_tool = ToolSet([Tool("other", {})])
+    await plugin.on_llm_request(event, req)
+    assert calls[1][1:3] == ([], [])
+
+
+async def test_task_commands_use_caller_and_stop_agent(plugin):
+    plugin.service.list_image_tasks = AsyncMock(return_value=[])
+    event = Event(text="/生图任务")
+    assert "还没有" in [item async for item in plugin.task_command(event)][0]
+    assert event.stopped
+    plugin.service.list_image_tasks.assert_awaited_once_with(event)
+    plugin.service.public_api.cancel_task = AsyncMock(return_value={"accepted": True})
+    event = Event(text="/生图取消 task1")
+    assert "按实际结果结算" in [item async for item in plugin.cancel_command(event)][0]
+    plugin.service.public_api.cancel_task.assert_awaited_once_with(event, "task1")
