@@ -32,11 +32,19 @@ jobs:
         run: python -m pytest tests/test_schema.py -q
 
   real-astrbot:
-    name: Real AstrBot 4.29.4 / Linux / Python 3.12
+    name: Real AstrBot ${{ matrix.framework.label }} / Linux / Python 3.12
+    strategy:
+      fail-fast: false
+      matrix:
+        framework:
+          - label: '4.29.4'
+            commit: '61335414433db721b3f7ecc93f90deafe0a59d78'
+          - label: 'master 6b10af7'
+            commit: '6b10af75e118714335aff3aab047bf7689fa1388'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      ASTRBOT_COMMIT: '61335414433db721b3f7ecc93f90deafe0a59d78'
+      ASTRBOT_COMMIT: ${{ matrix.framework.commit }}
       OPENAI_NATIVE_REAL_ASTRBOT: '1'
       OPENAI_NATIVE_ASTRBOT_RUNTIME: ${{ github.workspace }}/.framework-validation/runtime
       ASTRBOT_ROOT: ${{ github.workspace }}/.framework-validation/runtime

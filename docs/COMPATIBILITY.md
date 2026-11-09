@@ -9,6 +9,8 @@
 | NewAPI | main `bd6bb53019fb7e21804b31ab7365c9b2097f4b6c`，rc.49 | Alpha 渠道受限；直接 Codex 渠道 Images 转换不支持 |
 | Sub2API | main `ee58c0013c76ccd3f36439881bc848d342ec1c9d`，v0.2.20 | 账号类型影响 Alpha/Responses/Images；2.6 路径保留帧参数 |
 
+额外兼容检查固定研究时的 AstrBot master 提交 `6b10af75e118714335aff3aab047bf7689fa1388`；它与最低支持版本分别运行，不以滚动分支名代替可复现基线。
+
 ## AstrBot 接入
 
 - `astrbot/api/event/filter/__init__.py` 导出 `llm_tool`、`command`、`on_llm_request`。
