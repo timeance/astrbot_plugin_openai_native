@@ -1,0 +1,87 @@
+# AstrBot OpenAI 原生能力
+
+将 OpenAI 网页搜索、图片生成与编辑、原生 GIF 注册为 AstrBot 工具。主模型可按聊天内容调用，其他插件也可通过 Python API 复用；聊天决策、人格、记忆和 Agent 主循环仍由 AstrBot 管理。
+
+**当前为 0.1.0 开发版。** 自动化协议与桥接契约测试不等于真实账号测试；OpenAI、NewAPI、Sub2API 的实际账号能力，以及 QQ/NapCat 动画显示均需按 [验收清单](docs/VALIDATION.md) 验证。供应商或模型名称不是能力保证。
+
+## 安装
+
+需要 AstrBot **4.29.4 或更新版本**、Python **3.12 或更新版本**。项目仓库：https://github.com/timeance/astrbot_plugin_openai_native 。
+
+1. 在 AstrBot 插件管理中选择“从链接安装”，填写 `https://github.com/timeance/astrbot_plugin_openai_native`；也可将完整源码放入 `data/plugins/astrbot_plugin_openai_native`，不要只复制 `main.py`。
+2. 在 AstrBot 使用的 Python 环境安装 `requirements.txt` 中的依赖，重新加载插件。
+3. 打开 AstrBot 插件配置，分别配置“网页搜索”和“图片生成与编辑”，保存后重新加载插件。
+4. 确认聊天模型支持 Function Calling，且当前人格允许本插件工具。
+
+插件独立运行，不依赖 Angel Heart 或其他生图插件。Apache-2.0 许可证见 [LICENSE](LICENSE)。
+
+## 先选择供应商
+
+搜索和生图各自独立设置 `mode`：
+
+| mode | 用途 |
+| --- | --- |
+| `current` | 提交时读取当前会话所选 Provider，并固定本次任务 |
+| `provider` | 从原生 Provider 下拉选择一个已有供应商 |
+| `manual` | 独立配置 Base URL、Key 和模型 |
+
+例如 AstrBot 有 A/B/C/D，聊天设置 A 失败后 fallback 到 B：插件明确绑定 A 就只使用 A；选择“当前会话”且提交时解析到 A，本次插件请求仍使用 A。不会跟随聊天 fallback。搜索可以绑定 C，生图绑定 D。
+
+已有 Provider 的连接信息、环境变量解析后的 Key、代理和适用请求头直接复用。**图片模型必须明确填写**，不能把任意聊天模型当成图片模型；Responses 生图还需填写 `host_model`。配置示例见 [配置指南](docs/CONFIGURATION.md)。
+
+## 能做什么
+
+| 能力 | 接口 | 说明 |
+| --- | --- | --- |
+| 网页搜索 | Alpha Search / Responses `web_search` | 单个或多个查询、真实来源链接；不把普通模型正文当联网结果 |
+| 静态图片 | Images / Responses `image_generation` | PNG、JPEG、WebP；生成、编辑、多参考图和多图输出 |
+| 原生 GIF | Images API | 默认关闭，需要管理员启用及上游模型、渠道和账号权限 |
+| 图片任务 | 插件本地任务队列 | 状态、取消、结果保存、失败核对及重新下载 |
+| 插件间调用 | Python API v1 | 结构化搜索结果、任务和本地文件；调用方决定是否投递 |
+
+GIF 由上游原生生成，不在本地逐帧合成。每次工具调用可以单独指定 `output_format`、尺寸、帧数及每帧时长。GIF 默认 9 帧、每帧 200ms；支持 2–16 帧、20–2000ms，时长按 10ms 量化。动画输入的逐帧编辑、视频生成和视频编辑不在本版范围。
+
+参考图优先使用显式素材 ID，其次是当前消息和引用消息中的图片，最后是同一发送者在同一会话的近期图片。不会跨用户或跨群扫描历史来猜测图片。引用图片获取失败时请重新发送，或由调用插件明确提供素材。
+
+## 自然语言使用
+
+- “查一下这个产品今天的官方价格，带来源链接。”
+- “画一只坐在咖啡店里的柴犬。”
+- 发送图片后说：“把这张图改成水彩风格。”
+- 引用一张图片说：“让角色眨眼，生成循环 GIF。”
+
+工具名为 `openai_web_search`、`openai_image`、`openai_image_task`。生图工具立即返回任务 ID，后台完成后发送保存的原始文件。公共 API 不主动发消息。默认 Agent 和 Angel Heart 的标准主聊天路径是兼容目标；绕过 AstrBot 工具链的自定义聊天插件需要显式集成。
+
+## 管理命令
+
+| 命令 | 用途 |
+| --- | --- |
+| `/onative status` | 管理员查看配置和能力状态 |
+| `/onative probe <能力> confirm` | 管理员明确确认后执行可能计费的探测 |
+| `/onative task <ID>` | 查询自己的任务，管理员可管理 |
+| `/onative cancel <ID>` | 请求取消；已提交上游的请求不保证停止计费 |
+| `/onative quota` | 查看当前身份额度 |
+| `/onative retry-download <ID>` | 管理员重新下载已生成结果，不重新生图 |
+| `/onative reconcile <ID> <实际文件数>` | 管理员按核实后的执行数量结算待核对任务 |
+| `/onative search <搜索词>` | 直接搜索 |
+| `/onative image <提示词>` | 按默认配置提交生图 |
+
+`probe` 未明确输入 `confirm` 时只提示，不提交计费请求。支持的能力名称和状态以 `status`/服务返回为准。启动不自动执行付费搜索或生图。
+
+## 额度与故障处理
+
+默认群聊用户每日搜索 20 次、生图 3 个文件，用户额度跨群累计；每群同时有 200 次搜索和 30 个图片文件的总额度。私聊额度独立为 20/3。`0` 禁用，`-1` 不限；日界默认 UTC，可设置 IANA 时区，例如 `Asia/Hong_Kong`。
+
+生成已完成但下载或发送失败仍按已生成文件数结算。网络中断导致是否执行不明时，额度保持预占并等待管理员核对；**不要重复提交同一付费任务**。重新下载只读取原结果地址。队列中取消可释放额度，提交后的取消无法承诺上游退款。
+
+默认结果文件保留 7 天、任务记录 30 天，待核对任务不自动清理。任务与结果保存在 AstrBot 的 `data/plugin_data/astrbot_plugin_openai_native`，应按机器人数据一起备份。
+
+## 接入边界
+
+- NewAPI 入口不代表所有渠道都支持 Images 或 GIF。研究基线中，直接 Codex 渠道不支持 Images 转换。
+- Sub2API 不同账号类型的 Alpha、Responses、Images 路径不同；请求成功不能反推它使用了哪种隐藏上游。
+- 官方 OpenAI 的 Alpha Search 不是通用 API Key 保证路径，默认使用 Responses 搜索。
+- GIF 第一版仅走 Images，不静默改成 PNG，也不自动更换模型或协议。
+- 公共 API 只接受可信 AstrBot 事件；同进程插件间不是恶意代码隔离边界。
+
+更多说明：[公共 API](docs/PUBLIC_API.md) · [兼容与源码依据](docs/COMPATIBILITY.md) · [验收与开发](docs/VALIDATION.md) · [实现结构](docs/ARCHITECTURE.md) · [第三方声明](NOTICE)。
