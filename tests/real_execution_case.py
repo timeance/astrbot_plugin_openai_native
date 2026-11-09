@@ -25,7 +25,14 @@ from astrbot.core import db_helper, sp
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
-from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+
+try:
+    from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+except ModuleNotFoundError as exc:
+    if exc.name != "astrbot.core.astr_agent_tool_exec":
+        raise
+    # The pinned development branch moved the real executor into this package.
+    from astrbot.core.astr_agent_runtime.tool_executor import FunctionToolExecutor
 from astrbot.core.message.components import Image
 from astrbot.core.persona_mgr import DEFAULT_PERSONALITY, PersonaManager
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
@@ -334,7 +341,11 @@ async def run(case, data_dir):
     manager = FunctionToolManager()
     context = Context.__new__(Context)
     context.provider_manager = SimpleNamespace(llm_tools=manager)
-    config = {"agent_runner": {"runner_type": "local", "config": {"persona": {"persona_id": "executor"}}}}
+    # Each pinned source reads its own runner configuration schema.
+    config = {
+        "agent_runner": {"runner_type": "local", "config": {"persona": {"persona_id": "executor"}}},
+        "agent": {"runtime": "astrbot", "config": {"persona": {"persona_id": "executor"}}},
+    }
     context.persona_manager = PersonaManager(
         db_helper, SimpleNamespace(default_conf=config, get_conf=lambda umo: config)
     )
