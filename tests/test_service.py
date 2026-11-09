@@ -277,3 +277,27 @@ async def test_duplicate_auto_request_after_result_cache_changes_reuses_task(
         assert (await service.get_task(event, first.task_id))["quota_status"] == "settled"
     finally:
         await service.close()
+
+
+@pytest.mark.parametrize(
+    "options, message",
+    [
+        ({"frame_count": 2, "frame_duration_ms": 500}, "Frame settings apply only to GIF"),
+        ({"size": "1024x1024", "aspect_ratio": "1:1"}, "Choose size or aspect ratio"),
+    ],
+)
+async def test_public_api_still_rejects_conflicting_arguments_before_reservation(
+    tmp_path, event_factory, options, message
+):
+    service = await make_service(tmp_path)
+    event = event_factory()
+    try:
+        with pytest.raises(NativeError, match=message):
+            await service.public_api.submit_image(
+                event, ImageRequest("pelican", output_format="png", **options)
+            )
+        service.resolver.resolve.assert_not_called()
+        assert all(row["used"] == row["held"] == 0 for row in (await service.quota(event))["image"])
+        assert not (await service.list_image_tasks(event))
+    finally:
+        await service.close()

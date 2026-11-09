@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ("search", "generate", "edit", "gif", "persona_permissions")
+CASES = ("search", "generate", "generate_nulls", "generate_legacy", "edit", "gif", "persona_permissions")
 
 
 @pytest.mark.skipif(

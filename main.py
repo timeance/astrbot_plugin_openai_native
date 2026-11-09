@@ -60,12 +60,21 @@ def filter_tool_set(original: ToolSet, available: dict, settings: Settings) -> T
             params["n"].update(type="integer", minimum=1, maximum=settings.feature("image")["max_outputs"])
             params["references"].update(maxItems=settings.feature("image")["max_references"])
             target.parameters["required"] = ["prompt"]
+            # Strict tool callers may fill every field. Null must represent an
+            # unused option instead of forcing a size preset or GIF frame count.
+            for name in ("size", "aspect_ratio", "resolution", "quality", "complexity"):
+                params[name]["type"] = ["string", "null"]
+            params["size"]["pattern"] = r"^(auto|[1-9][0-9]*x[1-9][0-9]*)$"
+            params["aspect_ratio"]["pattern"] = r"^[1-9][0-9]*:[1-9][0-9]*$"
+            params["resolution"]["enum"] = ["1K", "1.5K", "2K", "4K", None]
+            params["quality"]["enum"] = ["auto", "low", "medium", "high", None]
+            params["complexity"]["maxLength"] = 32
             if "gif" not in formats:
                 params.pop("frame_count", None)
                 params.pop("frame_duration_ms", None)
             else:
-                params["frame_count"].update(type="integer", minimum=2, maximum=16)
-                params["frame_duration_ms"].update(type="integer", minimum=20, maximum=2000)
+                params["frame_count"].update(type=["integer", "null"], minimum=2, maximum=16)
+                params["frame_duration_ms"].update(type=["integer", "null"], minimum=20, maximum=2000)
         elif name == "openai_web_search":
             params["queries"].update(minItems=1, maxItems=settings.feature("search")["max_queries"])
             params["max_results"].update(
@@ -84,7 +93,7 @@ def filter_tool_set(original: ToolSet, available: dict, settings: Settings) -> T
     PLUGIN_NAME,
     "OpenAI Native contributors",
     "OpenAI 原生搜索、生图、编辑和 GIF",
-    "0.1.1",
+    "0.1.2",
     "https://github.com/timeance/astrbot_plugin_openai_native",
 )
 class OpenAINativePlugin(Star):
@@ -239,11 +248,11 @@ class OpenAINativePlugin(Star):
         references: list[str] | None = None,
         n: int = 1,
         output_format: str = "",
-        size: str = "",
-        aspect_ratio: str = "",
-        resolution: str = "",
-        quality: str = "auto",
-        complexity: str = "",
+        size: str | None = "",
+        aspect_ratio: str | None = "",
+        resolution: str | None = "",
+        quality: str | None = "auto",
+        complexity: str | None = "",
         frame_count: int | None = None,
         frame_duration_ms: int | None = None,
     ) -> str:
@@ -255,39 +264,53 @@ class OpenAINativePlugin(Star):
             references(array[string]): 本插件素材 ID；不接受 URL 或本地路径；省略自动读当前或引用图。
             n(int): 生成文件数量。
             output_format(string): png、jpeg、webp 或 gif；GIF 需要管理员启用。
-            size(string): auto 或供应商支持的 WIDTHxHEIGHT。
-            aspect_ratio(string): 可选的图片比例。
-            resolution(string): 可选的分辨率预设。
-            quality(string): 供应商支持的质量选项。
-            complexity(string): 供应商支持的复杂度选项。
-            frame_count(int): GIF 帧数，2 至 16；省略使用配置。
-            frame_duration_ms(int): GIF 每帧毫秒，20 至 2000；省略使用配置。
+            size(string): 默认 null；也可传 auto 或 WIDTHxHEIGHT（如 1024x1024）。固定尺寸与比例/分辨率互斥。
+            aspect_ratio(string): 默认 null；指定比例用 W:H（如 1:1、16:9），此时 size 必须为 null 或 auto。
+            resolution(string): 默认 null；只支持 1K、1.5K、2K、4K；不能填 auto 或像素尺寸。
+            quality(string): null 或 auto 使用默认质量；也可选 low、medium、high。
+            complexity(string): 默认 null；只在明确需要供应商特定复杂度参数时填写。
+            frame_count(int): 仅 GIF 使用，2 至 16；null 使用配置；静态图传 null，误填时忽略。
+            frame_duration_ms(int): 仅 GIF 使用，每帧 20 至 2000 毫秒；null 使用配置；静态图传 null，误填时忽略。
         """
         self._trace_tool(event, "openai_image", "started")
         try:
             refs = references or []
             if any(not isinstance(ref, str) or not ref or any(c in ref for c in "/\\:.") for ref in refs):
                 raise NativeError("validation", "LLM references must be plugin asset IDs")
+            # Normalize only the LLM boundary. Commands and PublicAPI retain
+            # strict validation; output_format alone decides static vs GIF.
+            is_gif = (output_format or self.settings.feature("image")["default_format"]).lower() == "gif"
             request = ImageRequest(
                 prompt=prompt,
                 action=action,
                 references=refs,
                 n=n,
                 output_format=output_format,
-                size=size,
-                aspect_ratio=aspect_ratio,
-                resolution=resolution,
-                quality=quality,
-                complexity=complexity,
-                frame_count=frame_count,
-                frame_duration_ms=frame_duration_ms,
+                size=size or "",
+                aspect_ratio="" if aspect_ratio in (None, "auto") else aspect_ratio,
+                resolution="" if resolution in (None, "auto") else resolution,
+                quality=quality or "auto",
+                complexity=complexity or "",
+                frame_count=frame_count if is_gif else None,
+                frame_duration_ms=frame_duration_ms if is_gif else None,
             )
             result = await self.service.submit_image(event, request, deliver=True)
             self._trace_tool(event, "openai_image", "accepted", result=result)
             return _json(result)
         except NativeError as exc:
             self._trace_tool(event, "openai_image", "failed", error=exc)
-            return _json({"error": exc.to_dict()})
+            result = {"error": exc.to_dict()}
+            if exc.category == "invalid_request" and exc.status_code is None and not exc.ambiguous:
+                result.update(
+                    request_submitted=False,
+                    guidance=(
+                        "本次调用参数无效，尚未提交生成；这不表示生图服务未配置或不可用。"
+                        "按 error.message 修正参数；不用的选项传 null。"
+                        "固定 size 与 aspect_ratio/resolution 二选一；静态图的帧参数传 null。"
+                        "已有任务应按任务 ID 查询，不要重新提交。"
+                    ),
+                )
+            return _json(result)
 
     @filter.llm_tool(name="openai_image_task")
     async def image_task(self, event: AstrMessageEvent, task_id: str, operation: str = "status") -> str:

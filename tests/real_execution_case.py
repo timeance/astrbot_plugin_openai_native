@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
+import jsonschema
 from astrbot.core import db_helper, sp
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import ToolSet
@@ -152,7 +153,10 @@ class Upstream:
                 },
             )
         expected_path = "/v1/images/edits" if self.case == "edit" else "/v1/images/generations"
-        assert self.case in {"generate", "edit", "gif"} and request.url.path == expected_path
+        assert (
+            self.case in {"generate", "generate_nulls", "generate_legacy", "edit", "gif"}
+            and request.url.path == expected_path
+        )
         data = self.gif if self.case == "gif" else self.png
         return httpx.Response(
             200,
@@ -232,8 +236,34 @@ async def check_image(plugin, event, upstream, data_dir, case):
         asset = await plugin.service.store.asset_get(actor_from_event(event))
         assert asset and Path(asset["path"]).read_bytes() == upstream.png
         arguments.update(action="edit", references=[asset["asset_id"]])
-    elif case == "gif":
-        arguments.update(output_format="gif", frame_count=2, frame_duration_ms=30)
+    elif case in {"generate_nulls", "gif"}:
+        arguments.update(
+            references=[],
+            n=1,
+            size=None,
+            aspect_ratio=None,
+            resolution=None,
+            quality=None,
+            complexity=None,
+            frame_count=None,
+            frame_duration_ms=None,
+        )
+        if case == "gif":
+            arguments.update(output_format="gif", frame_count=2, frame_duration_ms=30)
+    elif case == "generate_legacy":
+        # Exact shape from the failing real chat: auto resolution and GIF frame
+        # fillers must not prevent an explicitly static PNG from being submitted.
+        arguments.update(
+            references=[],
+            n=1,
+            size="auto",
+            aspect_ratio="1:1",
+            resolution="auto",
+            quality="auto",
+            complexity="auto",
+            frame_count=2,
+            frame_duration_ms=500,
+        )
     before = plugin.context.get_llm_tool_manager().get_full_tool_set()
     raw_schema = deepcopy(before.get_tool("openai_image").parameters)
     tools = await filtered_tools(plugin, event, before)
@@ -244,6 +274,18 @@ async def check_image(plugin, event, upstream, data_dir, case):
     assert before.get_tool("openai_image").parameters == raw_schema
     assert tool.parameters["properties"]["output_format"]["enum"] == ["png", "gif"]
     assert tool.parameters["properties"]["action"]["enum"] == ["auto", "generate", "edit"]
+    if case in {"generate_nulls", "gif"}:
+        # Use the image schema even when the set contains the search tool.
+        schema = deepcopy(
+            next(
+                t["function"]["parameters"]
+                for t in tools.openai_schema()
+                if t["function"]["name"] == "openai_image"
+            )
+        )
+        schema["required"] = list(schema["properties"])
+        schema["additionalProperties"] = False
+        jsonschema.validate(arguments, schema)
     submitted = json.loads(await execute_text(plugin, event, "openai_image", tools=tools, **arguments))
     assert "error" not in submitted and submitted["status"] in {"queued", "running"}, submitted
     task_id = submitted["task_id"]
@@ -294,6 +336,9 @@ async def check_image(plugin, event, upstream, data_dir, case):
     if case == "gif":
         assert body["frame_count"] == 2 and body["frame_duration_ms"] == 30
         assert artifact.frame_duration_ms == 30
+    else:
+        assert "frame_count" not in body and "frame_duration_ms" not in body
+        assert body["size"] == ("1024x1024" if case == "generate_legacy" else "auto")
 
 
 async def check_persona_permissions(plugin, upstream):
