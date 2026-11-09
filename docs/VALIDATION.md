@@ -13,7 +13,7 @@ python -m ruff check .
 
 `tests/test_bridge.py` 使用明确的 AstrBot 4.29.4 契约替身，只能证明桥接逻辑；不能称为真实 AstrBot 加载、完整 Agent 或 QQ 集成通过。`tests/test_schema.py` 检查原生配置字段与运行默认值一致。
 
-可选真实注册检查：在已经具备 AstrBot 4.29.4 依赖的独立测试环境，将 AstrBot 源码放入 PYTHONPATH，设置 `OPENAI_NATIVE_REAL_ASTRBOT=1`，再运行 `python -m pytest tests/test_bridge.py -q`。此检查仅导入真实注册 API，不会提交计费请求。已在独立 Python 3.12 环境对固定 v4.29.4 源码完成检查，三个工具和图片缓存消息钩子均已注册；CI 另设真实框架注册检查。完整 Agent 和聊天平台仍须实测。
+可选真实注册检查：在已经具备 AstrBot 4.29.4 依赖的独立测试环境，将 AstrBot 源码放入 PYTHONPATH，设置 `OPENAI_NATIVE_REAL_ASTRBOT=1`，再运行 `python -m pytest tests/test_bridge.py -q`。此检查仅导入真实注册 API，不会提交计费请求。已在独立 Python 3.12 环境对固定 v4.29.4 源码完成检查，三个工具和图片缓存消息钩子均已注册；CI 分别对最低版本和研究时的 master 固定提交运行真实框架注册检查。完整 Agent 和聊天平台仍须实测。
 
 ## 发布前真实验收
 
