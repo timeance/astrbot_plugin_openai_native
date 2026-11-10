@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from copy import deepcopy
+from string import Formatter
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -22,7 +23,19 @@ FEATURE = {
     "paths": {},
 }
 DEFAULTS = {
-    "search": {**FEATURE, "max_queries": 4, "max_results": 10, "default_results": 5, "max_tool_calls": 4},
+    "search": {
+        **FEATURE,
+        "max_queries": 1,
+        "max_results": 3,
+        "default_results": 3,
+        "max_tool_calls": 1,
+        "trigger_policy": "explicit",
+        "snippet_chars": 240,
+        "response_chars": 2000,
+        "show_citations": False,
+        "show_links": False,
+        "include_raw": False,
+    },
     "image": {
         **FEATURE,
         "max_outputs": 4,
@@ -33,6 +46,8 @@ DEFAULTS = {
         "max_frames_pixels": 67108864,
         "default_format": "png",
         "default_size": "auto",
+        "acceptance_template": "已接受{kind}任务，{task_id}",
+        "presets": {},
     },
     "gif": {"enabled": False, "frame_count": 9, "frame_duration_ms": 200},
     "limits": {
@@ -49,7 +64,7 @@ DEFAULTS = {
         "queue_size": 20,
         "user_image_concurrency": 1,
         "min_interval_seconds": 2,
-        "search_calls_per_message": 3,
+        "search_calls_per_message": 2,
     },
     "storage": {
         "reference_ttl_seconds": 600,
@@ -84,6 +99,9 @@ class Settings:
         try:
             if any(not isinstance(self.data[name], dict) for name in DEFAULTS):
                 raise ValueError("section")
+            for name in ("user_search", "group_search", "private_search", "user_image", "group_image", "private_image"):
+                if self.data["limits"].get(name) == -1:
+                    self.data["limits"][name] = 0
             ZoneInfo(self.limits["timezone"])
             positive = {
                 "limits": (
@@ -93,7 +111,10 @@ class Settings:
                     "user_image_concurrency",
                     "search_calls_per_message",
                 ),
-                "search": ("max_queries", "max_results", "default_results", "max_tool_calls"),
+                "search": (
+                    "max_queries", "max_results", "default_results", "max_tool_calls",
+                    "snippet_chars", "response_chars",
+                ),
                 "image": ("max_outputs", "max_references", "max_pixels", "max_frames_pixels"),
                 "storage": (
                     "reference_ttl_seconds",
@@ -118,8 +139,29 @@ class Settings:
                 "group_image",
                 "private_image",
             ):
-                if type(self.limits[name]) is not int or self.limits[name] < -1:
+                if type(self.limits[name]) is not int or self.limits[name] < 0:
                     raise ValueError(name)
+            if self.data["search"]["trigger_policy"] not in ("on_demand", "explicit"):
+                raise ValueError("trigger_policy")
+            if self.data["search"]["response_chars"] < 100:
+                raise ValueError("response_chars")
+            for name in ("show_citations", "show_links", "include_raw"):
+                if type(self.data["search"][name]) is not bool:
+                    raise ValueError(name)
+            template = self.data["image"]["acceptance_template"]
+            if not isinstance(template, str) or not template.strip() or len(template) > 300:
+                raise ValueError("acceptance_template")
+            if any(field not in (None, "kind", "task_id") or spec or conversion
+                   for _, field, spec, conversion in Formatter().parse(template)):
+                raise ValueError("acceptance_template")
+            presets = self.data["image"]["presets"]
+            if not isinstance(presets, dict) or len(presets) > 50 or any(
+                not isinstance(name, str) or not name.strip() or len(name) > 40
+                or any(char in name for char in "[]\n\r")
+                or not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 8000
+                for name, prompt in presets.items()
+            ):
+                raise ValueError("presets")
             for value in (
                 self.limits["min_interval_seconds"],
                 self.network["connect_timeout"],

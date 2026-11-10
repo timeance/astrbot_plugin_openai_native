@@ -84,6 +84,60 @@ def test_snapshot_defaults_and_detail_fields(setup_page):
     assert config == {} and not config.saved
 
 
+def test_new_page_fields_match_config_schema(setup_page):
+    api, _, _, _ = setup_page
+    schema = json.loads((ROOT / "_conf_schema.json").read_text("utf-8"))
+    paths = (
+        "search.trigger_policy", "search.max_queries", "search.max_results",
+        "search.default_results", "search.max_tool_calls", "search.snippet_chars",
+        "search.response_chars", "search.show_citations", "search.show_links",
+        "search.include_raw", "image.acceptance_template", "image.presets",
+        "limits.search_calls_per_message",
+    )
+    snapshot = api.snapshot()
+    for path in paths:
+        section, key = path.split(".")
+        assert schema[section]["items"][key]["default"] == DEFAULTS[section][key]
+        assert path in snapshot["fields"]
+        assert snapshot["values"][section][key] == DEFAULTS[section][key]
+
+
+async def test_search_and_image_page_settings_round_trip(setup_page):
+    api, config, _, _ = setup_page
+    patch = {
+        "search": {
+            "trigger_policy": "on_demand", "max_queries": 2, "max_results": 4,
+            "default_results": 2, "snippet_chars": 180, "response_chars": 1200,
+            "show_citations": True, "show_links": True, "include_raw": True,
+        },
+        "limits": {"search_calls_per_message": 3, "user_search": 0},
+        "image": {
+            "acceptance_template": "任务 {task_id} 已接受：{kind}",
+            "presets": {"水彩": "柔和水彩风格"},
+        },
+    }
+    result = await api.apply_patch(payload(api, patch))
+    for section, values in patch.items():
+        for key, value in values.items():
+            assert config[section][key] == value
+            assert result["values"][section][key] == value
+
+
+def test_legacy_unlimited_quota_is_shown_as_zero(setup_page):
+    api, config, _, _ = setup_page
+    config["limits"] = {"user_search": -1, "group_image": -1}
+    values = api.snapshot()["values"]["limits"]
+    assert values["user_search"] == values["group_image"] == 0
+
+
+async def test_removing_image_preset_replaces_saved_mapping(setup_page):
+    api, config, _, _ = setup_page
+    config["image"] = {"presets": {"旧预设": "旧提示词", "保留": "保持"}}
+    result = await api.apply_patch(payload(api, {"image": {"presets": {"保留": "保持"}}}))
+    assert config["image"]["presets"] == {"保留": "保持"}
+    assert result["values"]["image"]["presets"] == {"保留": "保持"}
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -247,7 +301,7 @@ async def test_unknown_and_secret_patch_rejected_without_save(patch, setup_page)
         {"limits": {"user_image": -2}},
         {"limits": {"search_concurrency": 0}},
         {"search": {"max_queries": 5}},
-        {"search": {"max_results": 3}},
+        {"search": {"max_results": 2}},
         {"search": {"timeout": False}},
         {"search": {"timeout": -1}},
         {"network": {"connect_timeout": float("inf")}},

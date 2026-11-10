@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import math
 import os
+import re
 import time
 import uuid
 from dataclasses import asdict, replace
@@ -311,6 +312,13 @@ class NativeService:
         if not isinstance(request, ImageRequest):
             raise NativeError("invalid_request", "Expected ImageRequest")
         cfg = self.settings.feature("image")
+        match = re.match(r"^\[预设:([^\]\r\n]+)\]\s*", request.prompt or "") if isinstance(request.prompt, str) else None
+        if match:
+            preset = cfg["presets"].get(match.group(1).strip())
+            if preset is None:
+                raise NativeError("invalid_request", "Unknown image preset")
+            extra = request.prompt[match.end():].strip()
+            request = replace(request, prompt=preset.strip() + ("\n" + extra if extra else ""))
         if not isinstance(request.prompt, str) or not request.prompt.strip() or len(request.prompt) > 32000:
             raise NativeError("invalid_request", "Image prompt is empty or too long")
         if request.action not in ("auto", "generate", "edit"):
@@ -454,7 +462,10 @@ class NativeService:
             created=created,
             connection=connection_info(connection),
         )
-        return TaskHandle(op["id"], op["status"], asdict(request))
+        return TaskHandle(
+            op["id"], op["status"],
+            {**asdict(request), "reference_count": len(op["request"]["assets"])},
+        )
 
     async def _worker(self):
         while True:
@@ -674,6 +685,8 @@ class NativeService:
             if op["actual"] and op["pending"]
             else ("held" if op["pending"] else ("settled" if op["actual"] else "released")),
             "requested": op["requested"],
+            "reference_count": len(op["request"]["assets"]) if op["kind"] == "image" else 0,
+            "image_options": op["request"]["options"] if op["kind"] == "image" else None,
             "generated": op["actual"],
             "held": op["pending"],
             "delivery_status": op["delivery_status"],

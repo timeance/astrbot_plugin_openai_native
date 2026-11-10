@@ -61,6 +61,53 @@ def test_explicit_options_can_precede_or_split_prompt():
     assert result.prompt.split() == ["柴犬", "在草地上"]
 
 
+def test_natural_chinese_ratio_and_resolution_suffix():
+    assert parse_image_command("柴犬立绘 比例 1:1 分辨率 1k") == ImageRequest(
+        prompt="柴犬立绘", aspect_ratio="1:1", resolution="1K", output_format="png"
+    )
+    result = parse_image_command("柴犬 比例 16:9 --格式 webp")
+    assert result.prompt == "柴犬" and result.aspect_ratio == "16:9"
+    assert result.output_format == "webp"
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "画出比例 1:1 的显示器",
+        "分辨率 2K 的电影海报",
+        "画面 比例 1:1 后面有文字",
+        "标签 '比例 1:1'",
+    ],
+)
+def test_natural_labels_in_prose_are_not_consumed(prompt):
+    assert parse_image_command(prompt).prompt == prompt
+
+
+def test_natural_values_reuse_explicit_validation_and_conflict_checks():
+    invalid("柴犬 比例 8:1")
+    invalid("柴犬 --比例 1:1 比例 16:9")
+    invalid("柴犬 --尺寸 512x512 分辨率 2K")
+
+
+def test_preset_option_prepends_marker_without_changing_other_options():
+    assert parse_image_command("柴犬 --预设 QQ表情 比例 1:1 --数量 2") == ImageRequest(
+        prompt="[预设:QQ表情] 柴犬", aspect_ratio="1:1", n=2, output_format="png"
+    )
+    assert parse_image_command('海报 --预设 "黑白 线稿"').prompt == "[预设:黑白 线稿] 海报"
+    assert parse_image_command("--预设 QQ表情").prompt == "[预设:QQ表情]"
+    invalid("柴犬 --预设 QQ表情 --预设 另一种")
+    invalid("柴犬 --预设 '坏]名称'")
+
+
+def test_quote_text_is_used_only_when_command_has_no_prompt():
+    assert parse_image_command("--分辨率 2K", quoted_text="  引用中的猫咪  ").prompt == "引用中的猫咪"
+    assert parse_image_command("新的猫咪", quoted_text="旧提示词").prompt == "新的猫咪"
+    assert parse_image_command("--预设 QQ表情", quoted_text="困惑的猫咪").prompt == (
+        "[预设:QQ表情] 困惑的猫咪"
+    )
+    invalid("--分辨率 2K", message="提示词")
+
+
 @pytest.mark.parametrize("suffix", ["16:9 2K 3", "3 16:9 2k", "2K 3 16:9"])
 def test_contiguous_trailing_shorthand(suffix):
     assert parse_image_command(f"柴犬 {suffix}") == ImageRequest(

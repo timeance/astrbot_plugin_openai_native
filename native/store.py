@@ -184,7 +184,7 @@ class Store:
                         "SELECT used,held FROM quota WHERE day=? AND bucket=? AND kind=?", (day, bucket, kind)
                     )
                     total = row["used"] + row["held"] if row else 0
-                    if limit == 0 or (limit > 0 and total + units > limit):
+                    if limit > 0 and total + units > limit:
                         raise NativeError("quota_exceeded", "Daily " + kind + " quota exceeded")
                 await self.db.execute(
                     """INSERT INTO operations
