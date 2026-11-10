@@ -4,9 +4,12 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
 import yaml
 
 from native.config import DEFAULTS, Settings
+from native.models import ImageRequest, NativeError
+from native.service import NativeService
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -71,7 +74,7 @@ def test_hidden_fields_keep_types_and_existing_values():
     settings = Settings(old)
     assert settings.feature("search")["keys"] == ["env:KEY"]
     assert settings.feature("search")["headers"] == {"X-Custom": "value"}
-    assert settings.limits["user_image"] == -1
+    assert settings.limits["user_image"] == 0
     assert settings.gif["enabled"] is True
     for section, defaults in DEFAULTS.items():
         for key, default in defaults.items():
@@ -79,3 +82,18 @@ def test_hidden_fields_keep_types_and_existing_values():
                 type(default)
             ]
             assert schema[section]["items"][key]["type"] == expected_type
+
+
+def test_quota_zero_and_legacy_minus_one_are_unlimited():
+    settings = Settings({"limits": {"user_search": 0, "group_image": -1}})
+    assert settings.limits["user_search"] == 0
+    assert settings.limits["group_image"] == 0
+
+
+def test_image_preset_combines_named_style_and_request():
+    service = NativeService.__new__(NativeService)
+    service.settings = Settings({"image": {"presets": {"QQ表情": "Q版半身像，白色描边"}}})
+    request = service._image_request(ImageRequest("[预设:QQ表情] 表示疑惑，文字为喵？"))
+    assert request.prompt == "Q版半身像，白色描边\n表示疑惑，文字为喵？"
+    with pytest.raises(NativeError, match="Unknown image preset"):
+        service._image_request(ImageRequest("[预设:不存在] 测试"))

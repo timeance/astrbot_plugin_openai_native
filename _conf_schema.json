@@ -120,25 +120,65 @@
       "max_queries": {
         "type": "int",
         "description": "每次最多查询数",
-        "default": 4,
+        "default": 1,
         "invisible": true
       },
       "max_results": {
         "type": "int",
         "description": "最多结果数",
-        "default": 10,
+        "default": 3,
         "invisible": true
       },
       "default_results": {
         "type": "int",
         "description": "默认结果数",
-        "default": 5,
+        "default": 3,
         "invisible": true
       },
       "max_tool_calls": {
         "type": "int",
         "description": "上游搜索工具次数上限",
-        "default": 4,
+        "default": 1,
+        "invisible": true
+      },
+      "trigger_policy": {
+        "type": "string",
+        "description": "搜索触发策略",
+        "default": "explicit",
+        "options": ["on_demand", "explicit"],
+        "labels": ["按需搜索", "仅明确请求搜索"],
+        "invisible": true
+      },
+      "snippet_chars": {
+        "type": "int",
+        "description": "每条搜索结果摘要字符上限",
+        "default": 240,
+        "invisible": true
+      },
+      "response_chars": {
+        "type": "int",
+        "description": "搜索回应总字符预算",
+        "default": 2000,
+        "invisible": true
+      },
+      "show_citations": {
+        "type": "bool",
+        "description": "向模型提供引用标记",
+        "default": false,
+        "hint": "仅控制工具数据，不能强制模型最终回复的格式。",
+        "invisible": true
+      },
+      "show_links": {
+        "type": "bool",
+        "description": "向模型提供来源链接",
+        "default": false,
+        "hint": "仅控制工具数据，不能强制模型最终回复包含链接。",
+        "invisible": true
+      },
+      "include_raw": {
+        "type": "bool",
+        "description": "包含上游原始搜索内容",
+        "default": false,
         "invisible": true
       }
     }
@@ -316,6 +356,20 @@
         "description": "默认尺寸",
         "default": "auto",
         "invisible": true
+      },
+      "acceptance_template": {
+        "type": "string",
+        "description": "任务受理回执模板",
+        "default": "已接受{kind}任务，{task_id}",
+        "hint": "可使用 {kind} 和 {task_id}；不能为空，最多 300 字符。",
+        "invisible": true
+      },
+      "presets": {
+        "type": "dict",
+        "description": "绘图预设名称与提示词模板",
+        "default": {},
+        "hint": "在插件专页以 JSON 对象编辑；键为预设名称，值为提示词模板。",
+        "invisible": true
       }
     }
   },
@@ -358,42 +412,42 @@
         "type": "int",
         "description": "群聊用户每日搜索额度（跨群累计）",
         "default": 20,
-        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
         "invisible": true
       },
       "group_search": {
         "type": "int",
         "description": "群每日搜索总额度",
         "default": 200,
-        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
         "invisible": true
       },
       "private_search": {
         "type": "int",
         "description": "私聊用户每日搜索额度",
         "default": 20,
-        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
         "invisible": true
       },
       "user_image": {
         "type": "int",
         "description": "群聊用户每日生图额度（跨群累计）",
         "default": 3,
-        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
         "invisible": true
       },
       "group_image": {
         "type": "int",
         "description": "群每日生图总额度",
         "default": 30,
-        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
         "invisible": true
       },
       "private_image": {
         "type": "int",
         "description": "私聊用户每日生图额度",
         "default": 3,
-        "hint": "0 禁用，-1 不限。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
         "invisible": true
       },
       "admin_exempt": {
@@ -434,8 +488,9 @@
       },
       "search_calls_per_message": {
         "type": "int",
-        "description": "每消息最多搜索调用数",
-        "default": 3,
+        "description": "每消息最多搜索调用数（含首次）",
+        "default": 2,
+        "hint": "插件专页按后续补查次数显示，填写 1 对应此处总调用上限 2。",
         "invisible": true
       }
     },

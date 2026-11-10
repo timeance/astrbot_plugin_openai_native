@@ -1,12 +1,16 @@
 import asyncio
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from test_bridge import Event, bridge, plugin  # noqa: F401 - imported pytest fixtures
 from test_service import make_service
 
+from native.assets import AssetStore
 from native.config import Settings
 from native.identity import actor_from_event
-from native.models import Connection, ImageRequest, NativeError
+from native.models import Connection, ImageRequest, InputAsset, NativeError
 from native.store import Store
 
 
@@ -99,12 +103,60 @@ async def test_current_image_cache_preserves_reference_before_source_is_removed(
         await service.close()
 
 
+async def test_text_only_reply_does_not_borrow_unrelated_cached_image(event_factory):
+    assets = AssetStore.__new__(AssetStore)
+    assets.settings = Settings({})
+    cached = InputAsset("cached", "unused.png", "image/png", "hash", 32, 32)
+    assets.store = SimpleNamespace(asset_get=AsyncMock(return_value=cached.__dict__))
+    assets.from_event = AsyncMock(return_value=[])
+    actor = actor_from_event(event_factory())
+    reply = type("Reply", (), {"chain": [], "message_str": "a cat"})()
+    quoted = event_factory(components=[reply])
+    quoted_actor = actor_from_event(quoted)
+    assert await assets.prepare(quoted, quoted_actor, ImageRequest("draw", action="auto")) == []
+    with pytest.raises(NativeError, match="reference image"):
+        await assets.prepare(quoted, quoted_actor, ImageRequest("edit", action="edit"))
+    assets.store.asset_get.assert_not_awaited()
+    assert await assets.prepare(event_factory(), actor, ImageRequest("edit", action="edit")) == [cached]
+
+
+async def test_duplicate_reference_keeps_first_message_asset(event_factory):
+    assets = AssetStore.__new__(AssetStore)
+    assets.settings = Settings({})
+    first = InputAsset("quote", "quote.png", "image/png", "same-hash", 32, 32)
+    second = InputAsset("current", "current.png", "image/png", "same-hash", 32, 32)
+    assets.from_event = AsyncMock(return_value=[first, second])
+    assets.store = SimpleNamespace(asset_get=AsyncMock())
+    event = event_factory(components=[type("Reply", (), {})()])
+    assert await assets.prepare(event, actor_from_event(event), ImageRequest("edit", action="edit")) == [first]
+
+
+async def test_fixed_command_uses_explicit_quoted_text(request, monkeypatch):
+    image_plugin = request.getfixturevalue("plugin")
+    quoted_module = ModuleType("astrbot.core.utils.quoted_message")
+    resolver = AsyncMock(return_value="被引用的猫")
+    quoted_module.extract_quoted_message_text = resolver
+    monkeypatch.setitem(sys.modules, quoted_module.__name__, quoted_module)
+    reply = type("Reply", (), {})()
+    for text, expected in (
+        ("/生图", "被引用的猫"),
+        ("/生图 比例 1:1 --预设 QQ表情", "[预设:QQ表情] 被引用的猫"),
+    ):
+        event = Event(text=text)
+        event.get_messages = lambda: [reply]
+        assert [item async for item in image_plugin.image_command(event)]
+        image_request = image_plugin.service.submit_image.call_args.args[1]
+        assert image_request.prompt == expected
+        assert image_request.aspect_ratio == ("1:1" if "比例" in text else "")
+    assert resolver.await_count == 2
+
+
 @pytest.mark.parametrize(
     "section,value",
     [
         ("limits", {"queue_size": 0}),
         ("storage", {"artifact_days": 31}),
-        ("search", {"max_results": 3}),
+        ("search", {"max_results": 11}),
         ("image", {"max_outputs": 0}),
         ("network", {"download_timeout": float("nan")}),
     ],

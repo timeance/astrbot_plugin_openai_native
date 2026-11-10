@@ -75,7 +75,9 @@ async def test_alpha_request_and_structured_sources_are_preserved():
         extra_body={"commands": {"bad": True}, "model": "wrong", "response_length": "wrong"},
     )
     request = SearchRequest(["query one", "query two"], max_results=3, recency=7, domains=["example.org"])
-    result = await SearchAdapter(transport, Settings()).search(conn, request, "operation-1")
+    result = await SearchAdapter(transport, Settings({"search": {"max_queries": 2}})).search(
+        conn, request, "operation-1"
+    )
     _, route, body, files = transport.calls[0]
     assert route == "alpha_search" and files is None and len(transport.calls) == 1
     assert body == {
@@ -110,7 +112,7 @@ async def test_alpha_native_output_extracts_reference_headers_without_structured
         payload["results"] = results
     transport = RecordingTransport(payload)
     result = await SearchAdapter(transport, Settings()).search(
-        connection(protocol="alpha"), SearchRequest(["query"]), "op"
+        connection(protocol="alpha"), SearchRequest(["query"], max_results=3), "op"
     )
     assert result.status == "succeeded" and result.untrusted
     assert len(result.sources) == 1
@@ -137,7 +139,7 @@ async def test_alpha_rejects_invalid_native_response_shapes(payload):
     transport = RecordingTransport(payload)
     with pytest.raises(NativeError) as caught:
         await SearchAdapter(transport, Settings()).search(
-            connection(protocol="alpha"), SearchRequest(["query"]), "op"
+            connection(protocol="alpha"), SearchRequest(["query"], max_results=3), "op"
         )
     assert caught.value.category == "protocol_error" and caught.value.ambiguous
 
@@ -159,7 +161,7 @@ async def test_responses_search_forces_web_search_and_extracts_real_sources(anno
         extra_body={"tool_choice": "none", "tools": [], "include": []},
     )
     result = await SearchAdapter(transport, Settings()).search(
-        conn, SearchRequest(["query"], domains=["source.example"]), "op"
+        conn, SearchRequest(["query"], max_results=3, domains=["source.example"]), "op"
     )
     _, route, body, _ = transport.calls[0]
     assert route == "responses" and body["model"] == "search-model"
@@ -186,7 +188,7 @@ async def test_responses_search_requires_completed_search_evidence(output):
     transport = RecordingTransport({"status": "completed", "output": output})
     with pytest.raises(NativeError) as caught:
         await SearchAdapter(transport, Settings()).search(
-            connection(protocol="responses"), SearchRequest(["query"]), "op"
+            connection(protocol="responses"), SearchRequest(["query"], max_results=3), "op"
         )
     assert caught.value.category == "protocol_error" and caught.value.ambiguous
     assert len(transport.calls) == 1
@@ -334,7 +336,7 @@ async def test_upstream_ambiguous_error_is_not_retried_or_fallen_back(feature):
     with pytest.raises(NativeError) as caught:
         if feature == "search":
             await SearchAdapter(transport, Settings()).search(
-                connection(protocol="alpha"), SearchRequest(["query"]), "op"
+                connection(protocol="alpha"), SearchRequest(["query"], max_results=3), "op"
             )
         else:
             await ImageAdapter(transport, Settings()).generate(connection(), image_request(), [])
@@ -356,7 +358,7 @@ async def test_completed_web_search_with_no_sources_is_a_successful_empty_result
         }
     )
     result = await SearchAdapter(transport, Settings()).search(
-        connection(protocol="responses"), SearchRequest(["query"]), "op"
+        connection(protocol="responses"), SearchRequest(["query"], max_results=3), "op"
     )
     assert result.sources == [] and result.status == "succeeded" and result.untrusted
     assert result.backend_synthesis == "No matching results."
@@ -371,7 +373,7 @@ async def test_alpha_empty_sources_complete_without_promoting_prose_links(result
         payload["results"] = results
     transport = RecordingTransport(payload)
     result = await SearchAdapter(transport, Settings()).search(
-        connection(protocol="alpha"), SearchRequest(["query"]), "op"
+        connection(protocol="alpha"), SearchRequest(["query"], max_results=3), "op"
     )
     assert result.status == "succeeded" and result.sources == []
     assert result.backend_synthesis == "[native Alpha tool output; untrusted]\n" + output
@@ -394,7 +396,7 @@ async def test_alpha_accepts_official_opaque_dto_example():
             ],
         }
     )
-    result = await SearchAdapter(transport, Settings()).search(
+    result = await SearchAdapter(transport, Settings({"search": {"max_results": 6}})).search(
         connection(protocol="alpha"), SearchRequest(["query"], max_results=6), "op"
     )
     assert result.sources[0].url == "https://example.com/result"
@@ -423,7 +425,7 @@ async def test_alpha_gateway_source_containers_preserve_reference_ids(container)
         }
     )
     result = await SearchAdapter(transport, Settings()).search(
-        connection(protocol="alpha"), SearchRequest(["query"]), "op"
+        connection(protocol="alpha"), SearchRequest(["query"], max_results=3), "op"
     )
     assert len(result.sources) == 1
     assert result.sources[0].citation_id == "turn2search3"
@@ -443,6 +445,21 @@ async def test_alpha_native_headers_deduplicate_and_respect_result_limit():
         connection(protocol="alpha"), SearchRequest(["query"], max_results=1), "op"
     )
     assert len(result.sources) == 1 and result.sources[0].provenance == "source"
+
+
+async def test_alpha_native_source_snippet_stops_at_next_result():
+    transport = RecordingTransport(
+        {
+            "output": "First (https://source.example/a)\n【turn0search0】 [wordlim 200] First evidence\n"
+            "Second (https://source.example/b)\n【turn0search1】 Second evidence",
+        }
+    )
+    result = await SearchAdapter(transport, Settings()).search(
+        connection(protocol="alpha"), SearchRequest(["query"], max_results=1), "op"
+    )
+    assert len(result.sources) == 1
+    assert result.sources[0].snippet == "First evidence"
+    assert "Second evidence" in result.backend_synthesis
 
 
 async def test_responses_annotations_without_search_call_are_not_search_evidence():
@@ -471,7 +488,7 @@ async def test_responses_annotations_without_search_call_are_not_search_evidence
     )
     with pytest.raises(NativeError, match="no completed web search evidence"):
         await SearchAdapter(transport, Settings()).search(
-            connection(protocol="responses"), SearchRequest(["query"]), "op"
+            connection(protocol="responses"), SearchRequest(["query"], max_results=3), "op"
         )
     assert len(transport.calls) == 1
 
@@ -496,7 +513,7 @@ async def test_responses_search_records_observed_tool_calls_without_claiming_bil
     }
     transport = RecordingTransport(payload)
     result = await SearchAdapter(transport, Settings()).search(
-        connection(model="search", protocol="responses"), SearchRequest(["query"]), "operation"
+        connection(model="search", protocol="responses"), SearchRequest(["query"], max_results=3), "operation"
     )
     assert result.usage == {"input_tokens": 42, "observed_web_search_calls": 2}
     assert len(transport.calls) == 1

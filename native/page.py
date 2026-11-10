@@ -369,7 +369,8 @@ class PageAPI:
                     if isinstance(DEFAULTS[section][key], dict):
                         if not isinstance(value, dict):
                             raise PageError("validation", "字典配置必须是对象。")
-                        value = _merge_mapping(current if isinstance(current, dict) else {}, value)
+                        if path != "image.presets":
+                            value = _merge_mapping(current if isinstance(current, dict) else {}, value)
                         if _secret(path, value):
                             raise PageError("secret_patch", "秘密字段必须通过 secret_updates 替换。")
                     if _encoded(value) != _encoded(current):
@@ -396,6 +397,8 @@ class PageAPI:
             try:
                 # AstrBot save_config merges into memory before writing to disk.
                 # Pass only the actual candidate; keep absent defaults and legacy keys intact.
+                if candidate.get("image", {}).get("presets") != before.get("image", {}).get("presets"):
+                    self.config.setdefault("image", {}).pop("presets", None)
                 self.config.save_config(deepcopy(candidate))
                 self.config.update(deepcopy(candidate))
             except Exception:

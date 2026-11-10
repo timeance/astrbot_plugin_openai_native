@@ -52,11 +52,13 @@
   const services = [["auto", "自动识别"], ["openai", "OpenAI"], ["newapi", "NewAPI"], ["sub2api", "Sub2API"], ["unknown", "未知 / 不识别"]];
   const groups = [
     ["search-connection", "search", "搜索连接", "使用当前会话、固定供应商，或独立的手动 API。"],
-    ["search-bounds", "search", "查询与结果", ""],
+    ["search-bounds", "search", "触发与查询", "按需搜索由主代理判断是否需要；明确触发仅响应用户明确的搜索请求。"],
+    ["search-display", "search", "结果摘要与来源信息", "控制提供给模型的搜索内容；最终回复由模型生成。"],
     ["image-connection", "image", "图片连接", "搜索与图片独立。图片模型不会自动使用聊天模型。"],
+    ["image-prompt", "image", "任务提示与绘图预设", "按名称保存绘图提示词，任务受理回执可单独设置。"],
     ["image-output", "image", "输出约束", ""],
     ["gif", "image", "原生 GIF", "默认关闭。需上游原生 GIF 支持；不会在本地拼接静态帧。"],
-    ["quota", "limits", "每日额度", "搜索按次、图片按张计。-1 表示不限，0 表示不允许；每日边界按所选时区计算。"],
+    ["quota", "limits", "每日额度", "搜索按次、图片按张计。填写 0 表示不限；每日边界按所选时区计算。"],
     ["schedule", "limits", "频率、并发与队列", ""],
     ["storage", "limits", "文件与记录保存", "文件大小以字节填写，字段下显示换算。任务记录保留天数不得短于结果文件。"],
     ["search-advanced", "advanced", "搜索 · 连接参数", ""],
@@ -94,10 +96,27 @@
     field(name + ".extra_body", "附加请求体", "json", name + "-advanced", { advanced: true, hint: "JSON 对象；服务端仅使用对应协议允许的参数。" });
     field(name + ".paths", "接口路径覆盖", "json", name + "-advanced", { advanced: true, hint: "JSON 对象，值为本地接口路径，例如 /responses；不得包含完整 URL、查询或路径跳转。", stringValues: true });
   }
+  field("search.trigger_policy", "搜索触发策略", "select", "search-bounds", {
+    options: [["on_demand", "按需搜索"], ["explicit", "仅明确请求搜索"]]
+  });
   field("search.max_queries", "每次最多查询", "number", "search-bounds", { min: 1, max: 4, unit: "条" });
-  field("search.max_results", "最多搜索结果", "number", "search-bounds", { min: 1, max: 10, unit: "条" });
   field("search.default_results", "默认搜索结果", "number", "search-bounds", { min: 1, max: 10, unit: "条" });
-  field("search.max_tool_calls", "上游搜索工具次数上限", "number", "search-bounds", { min: 1, unit: "次" });
+  field("search.max_results", "最多搜索结果", "number", "search-bounds", { min: 1, max: 10, unit: "条" });
+  field("limits.search_calls_per_message", "后续最多补查", "number", "search-bounds", {
+    min: 0, displayOffset: -1, unit: "次", hint: "不含首次搜索；填写 1 表示每条消息最多搜索 2 次。"
+  });
+  field("search.max_tool_calls", "单次上游工具调用上限", "number", "search-bounds", { min: 1, unit: "次", hint: "限制一次搜索请求中的上游工具调用。" });
+  field("search.snippet_chars", "每条结果摘要上限", "number", "search-display", { min: 1, unit: "字符" });
+  field("search.response_chars", "搜索回应总预算", "number", "search-display", { min: 100, unit: "字符" });
+  field("search.show_citations", "向模型提供引用标记", "boolean", "search-display", { hint: "仅控制工具数据，不能强制模型最终回复的格式。" });
+  field("search.show_links", "向模型提供来源链接", "boolean", "search-display", { hint: "仅控制工具数据，不能强制模型最终回复包含链接。" });
+  field("search.include_raw", "包含上游原始搜索内容", "boolean", "search-display", { hint: "原始内容可能较长，仅在确实需要时开启。" });
+  field("image.acceptance_template", "任务受理回执模板", "text", "image-prompt", {
+    wide: true, hint: "可使用 {kind} 和 {task_id}；不能为空，最多 300 字符。"
+  });
+  field("image.presets", "绘图预设（JSON）", "json", "image-prompt", {
+    stringValues: true, hint: "名称到提示词模板的 JSON 对象，例如 {\"水彩\": \"柔和水彩风格\"}；最多 50 项。"
+  });
   field("image.max_outputs", "每次最多输出", "number", "image-output", { min: 1, max: 4, unit: "张" });
   field("image.max_references", "最多参考图片", "number", "image-output", { min: 1, unit: "张" });
   field("image.formats", "允许的输出格式", "list", "image-output", { hint: "png、jpeg、webp、gif；用逗号或换行分隔。GIF 另需开启下方开关。", allowed: ["png", "jpeg", "webp", "gif"] });
@@ -112,14 +131,13 @@
   field("limits.timezone", "每日重置时区", "text", "quota", { placeholder: "UTC", hint: "IANA 时区，例如 Asia/Shanghai、Asia/Hong_Kong 或 UTC。" });
   for (const [prefix, title, unit] of [["search", "搜索", "次/日"], ["image", "图片", "张/日"]]) {
     for (const [scope, label] of [["user", "用户"], ["group", "群组"], ["private", "私聊"]]) {
-      field("limits." + scope + "_" + prefix, label + title + "额度", "number", "quota", { min: -1, unit });
+      field("limits." + scope + "_" + prefix, label + title + "额度", "number", "quota", { min: 0, unit, hint: "0 表示不限。" });
     }
   }
   field("limits.admin_exempt", "管理员免除每日额度", "boolean", "quota", { hint: "仅影响额度，不代表上游免费。" });
   for (const [key, label, unit] of [
     ["search_concurrency", "搜索并发", "个"], ["image_concurrency", "图片并发", "个"],
-    ["queue_size", "图片队列容量", "个任务"], ["user_image_concurrency", "单用户图片并发", "个"],
-    ["search_calls_per_message", "每条消息搜索调用上限", "次"]
+    ["queue_size", "图片队列容量", "个任务"], ["user_image_concurrency", "单用户图片并发", "个"]
   ]) field("limits." + key, label, "number", "schedule", { min: 1, unit });
   field("limits.min_interval_seconds", "用户请求最小间隔", "number", "schedule", { min: 0, integer: false, unit: "秒" });
   for (const [key, label, unit] of [
@@ -326,7 +344,10 @@
     else if (entry.type === "json") input.value = typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 2);
     else if (entry.type === "list") input.value = Array.isArray(value) ? value.join("\n") : typeof value === "string" ? value : "";
     else {
-      const text = value === null || value === undefined ? "" : String(value);
+      const normalized = entry.group === "quota" && value === -1 ? 0 : value;
+      const displayed = entry.type === "number" && normalized !== null && normalized !== undefined && entry.displayOffset
+        ? Number(normalized) + entry.displayOffset : normalized;
+      const text = displayed === null || displayed === undefined ? "" : String(displayed);
       if (entry.type === "select" && !Array.from(input.options).some((item) => item.value === text)) input.append(option(text, text || "未选择"));
       input.value = text;
     }
@@ -389,11 +410,12 @@
     const raw = input.value.trim();
     if (entry.type === "number") {
       if (!raw || input.validity?.badInput) return { error: "请填写有效数字。" };
-      const value = Number(raw);
-      if (!Number.isFinite(value)) return { error: "请填写有限数字。" };
-      if (entry.integer !== false && !Number.isSafeInteger(value)) return { error: "请填写有效整数。" };
-      if (entry.min !== undefined && value < entry.min) return { error: "不能小于 " + entry.min + "。" };
-      if (entry.max !== undefined && value > entry.max) return { error: "不能大于 " + entry.max + "。" };
+      const displayValue = Number(raw);
+      if (!Number.isFinite(displayValue)) return { error: "请填写有限数字。" };
+      if (entry.integer !== false && !Number.isSafeInteger(displayValue)) return { error: "请填写有效整数。" };
+      if (entry.min !== undefined && displayValue < entry.min) return { error: "不能小于 " + entry.min + "。" };
+      if (entry.max !== undefined && displayValue > entry.max) return { error: "不能大于 " + entry.max + "。" };
+      const value = displayValue - (entry.displayOffset || 0);
       const limits = state.snapshot?.fields?.[entry.path];
       if (typeof limits?.min === "number" && value < limits.min) return { error: "不能小于 " + limits.min + "。" };
       if (typeof limits?.max === "number" && value > limits.max) return { error: "不能大于 " + limits.max + "。" };
@@ -404,6 +426,8 @@
         const value = JSON.parse(raw);
         if (!value || Array.isArray(value) || typeof value !== "object") return { error: "请填写 JSON 对象，例如 {}。" };
         if (entry.stringValues && Object.values(value).some((item) => typeof item !== "string")) return { error: "此对象的每个值都需为字符串。" };
+        if (entry.path === "image.presets" && (Object.keys(value).length > 50 || Object.entries(value).some(([name, prompt]) =>
+          !name.trim() || name.length > 40 || /[\[\]\r\n]/.test(name) || !prompt.trim() || prompt.length > 8000))) return { error: "预设最多 50 项；名称需为 1–40 字符，提示词需为 1–8000 字符。" };
         if (entry.path.endsWith(".paths") && Object.values(value).some((item) => /[?#\\]/.test(item) || /(^|\/)\.\.?($|\/)/.test(item) || /^[a-z][a-z0-9+.-]*:/i.test(item) || item.startsWith("//"))) return { error: "路径需为本地接口路径，不能带 URL、查询或路径跳转。" };
         return { value };
       } catch { return { error: "JSON 格式错误，请检查引号、逗号与括号。" }; }
@@ -416,6 +440,10 @@
     if (entry.path === "limits.timezone" && raw) {
       try { new Intl.DateTimeFormat("zh-CN", { timeZone: raw }).format(); }
       catch { return { error: "请填写有效 IANA 时区，例如 Asia/Shanghai。" }; }
+    }
+    if (entry.path === "image.acceptance_template") {
+      const literal = raw.replaceAll("{{", "").replaceAll("}}", "").replaceAll("{kind}", "").replaceAll("{task_id}", "");
+      if (!raw || raw.length > 300 || /[{}]/.test(literal)) return { error: "请填写 1–300 字符的模板，仅使用 {kind}、{task_id} 占位符。" };
     }
     return { value: raw };
   }

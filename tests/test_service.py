@@ -247,18 +247,56 @@ async def test_search_success_and_inflight_caller_cancellation(tmp_path, event_f
     service.search_adapter.search = AsyncMock(side_effect=search)
     event = event_factory()
     try:
-        caller = asyncio.create_task(service.search(event, SearchRequest(["price"])))
+        caller = asyncio.create_task(service.search(event, SearchRequest(["price"], max_results=3)))
         await asyncio.wait_for(started.wait(), 3)
         caller.cancel()
         with pytest.raises(asyncio.CancelledError):
             await caller
         release.set()
-        result = await service.search(event, SearchRequest(["price"]))
+        result = await service.search(event, SearchRequest(["price"], max_results=3))
         assert result.sources[0].title == "Official"
         service.search_adapter.search.assert_awaited_once()
         assert all(row["used"] == 1 and row["held"] == 0 for row in (await service.quota(event))["search"])
     finally:
         release.set()
+        await service.close()
+
+
+async def test_search_reuses_same_message_request_and_limits_distinct_calls(tmp_path, event_factory):
+    service = await make_service(tmp_path, limits={"search_calls_per_message": 2})
+    service.search_adapter.search = AsyncMock(
+        side_effect=lambda conn, request, identity: SearchResult(
+            identity, request.queries, [SearchHit("Official", "https://example.com")]
+        )
+    )
+    event = event_factory()
+    try:
+        first = await service.search(event, SearchRequest(["first"], max_results=1))
+        repeated = await service.search(event, SearchRequest(["first"], max_results=1))
+        await service.search(event, SearchRequest(["followup"], max_results=1))
+        with pytest.raises(NativeError, match="Search limit for this message"):
+            await service.search(event, SearchRequest(["third"], max_results=1))
+        assert first.operation_id == repeated.operation_id
+        assert service.search_adapter.search.await_count == 2
+    finally:
+        await service.close()
+
+
+async def test_public_search_stays_strict_under_explicit_tool_policy(tmp_path, event_factory):
+    service = await make_service(tmp_path, search={"trigger_policy": "explicit"})
+    service.search_adapter.search = AsyncMock(
+        side_effect=lambda conn, request, identity: SearchResult(identity, request.queries, [])
+    )
+    try:
+        event = event_factory()
+        result = await service.public_api.search(event, SearchRequest(["ordinary caller"], max_results=1))
+        assert result.status == "succeeded"
+        with pytest.raises(NativeError, match="search query count"):
+            await service.public_api.search(event, SearchRequest(["first", "second"], max_results=1))
+        with pytest.raises(NativeError, match="search result limit"):
+            await service.public_api.search(event, SearchRequest(["first"], max_results=4))
+        service.search_adapter.search.assert_awaited_once()
+    finally:
         await service.close()
 
 

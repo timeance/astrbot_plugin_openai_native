@@ -167,7 +167,14 @@ class SearchAdapter:
             r"(?m)^(?P<title>[^\n]+?) \((?P<url>https?://[^\s]+)\)[ \t]*\r?\n"
             r"[ \t]*【(?P<ref_id>[A-Za-z0-9_-]+)】"
         )
-        return [match.groupdict() for match in headers.finditer(output)]
+        matches = list(headers.finditer(output))
+        rows = []
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
+            snippet = output[match.end() : end].strip()
+            snippet = re.sub(r"^\[wordlim\s+\d+\]\s*", "", snippet)
+            rows.append({**match.groupdict(), "snippet": snippet})
+        return rows
 
     async def _alpha(self, conn: Connection, request: SearchRequest, operation_id: str) -> SearchResult:
         commands = []

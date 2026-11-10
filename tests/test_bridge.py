@@ -16,7 +16,7 @@ import pytest
 
 from native.config import Settings
 from native.identity import actor_from_event
-from native.models import Artifact, NativeError
+from native.models import Artifact, NativeError, SearchHit, SearchResult
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -223,7 +223,7 @@ def plugin(bridge):
     instance = bridge.OpenAINativePlugin.__new__(bridge.OpenAINativePlugin)
     instance.settings = Settings()
     instance.service = SimpleNamespace(
-        search=AsyncMock(return_value={"status": "succeeded"}),
+        search=AsyncMock(return_value=SearchResult("op", ["current price"], [])),
         submit_image=AsyncMock(return_value={"task_id": "id", "status": "queued"}),
         probe=AsyncMock(return_value={"status": "tested"}),
         available_tools=AsyncMock(return_value={"image": False, "search": False}),
@@ -348,12 +348,64 @@ async def test_delivery_preserves_original_file_and_hook_does_not_resurrect(plug
 
 
 async def test_search_calls_service_and_returns_marked_structured_result(plugin):
-    event = Event()
+    event = Event(text="帮我搜索 current price")
     await plugin.web_search(event, ["current price"])
     request = plugin.service.search.call_args.args[1]
     assert request.queries == ["current price"]
-    assert request.max_results == 5
+    assert request.max_results == 3
     assert request.recency is None
+
+
+async def test_llm_search_clamps_request_and_compacts_result(plugin):
+    plugin.settings = Settings({"search": {"response_chars": 350, "snippet_chars": 30}})
+    plugin.service.search.return_value = SearchResult(
+        "op", ["one"],
+        [SearchHit(f"Source {index}", f"https://source.example/{index}",
+                   "Evidence 【turn0search0】 https://hidden.example/a " + "x" * 200,
+                   f"turn0search{index}") for index in range(4)],
+        backend_synthesis="raw https://hidden.example/full 【turn0search9】",
+    )
+    result_text = await plugin.web_search(Event(text="搜索 one"), ["one", "two"], max_results=9)
+    result = json.loads(result_text)
+    request = plugin.service.search.call_args.args[1]
+    assert request.queries == ["one"] and request.max_results == 3
+    assert len(result["sources"]) == 3 and len(result_text) <= 350
+    assert "https://" not in result_text and "turn0search" not in result_text
+    assert "backend_synthesis" not in result and "backend_excerpt" not in result
+
+
+async def test_raw_excerpt_includes_only_selected_alpha_source(plugin):
+    plugin.settings = Settings({"search": {"include_raw": True, "max_results": 1,
+                                           "default_results": 1, "response_chars": 450}})
+    plugin.service.search.return_value = SearchResult(
+        "op", ["query"], [
+            SearchHit("First", "https://source.example/a"),
+            SearchHit("Second", "https://source.example/b"),
+        ],
+        backend_synthesis=(
+            "[native Alpha tool output; untrusted]\n"
+            "First (https://source.example/a)\n【turn0search0】 First evidence\n"
+            "Second (https://source.example/b)\n【turn0search1】 Second evidence"
+        ),
+    )
+    response = json.loads(await plugin.web_search(Event(text="搜索 query"), ["query"]))
+    assert len(response["sources"]) == 1
+    assert "First evidence" in response["backend_excerpt"]
+    assert "Second evidence" not in response["backend_excerpt"]
+    assert "https://" not in json.dumps(response)
+
+
+async def test_explicit_policy_only_gates_llm_tool(plugin):
+    plugin.settings = Settings({"search": {"trigger_policy": "explicit"}})
+    event = Event(text="解释这个概念")
+    refusal = json.loads(await plugin.web_search(event, ["concept"]))
+    assert refusal["error"]["category"] == "search_not_requested"
+    plugin.service.search.assert_not_awaited()
+    event.text = "请搜索这个概念"
+    assert json.loads(await plugin.web_search(event, ["concept"]))["status"] == "succeeded"
+    event.text = "/onative search concept"
+    assert json.loads(await plugin.web_search(event, ["concept"]))["status"] == "succeeded"
+    assert plugin.service.search.await_count == 2
 
 
 async def test_explicit_zero_frame_is_forwarded_for_service_validation(plugin):
@@ -492,7 +544,22 @@ async def test_fixed_commands_stop_agent_and_share_submission(plugin):
         request = plugin.service.submit_image.call_args.args[1]
         assert (request.output_format == "gif") == animated
         assert plugin.service.submit_image.call_args.kwargs == {"deliver": True}
-        assert "任务 ID：id" in replies[0]
+        assert replies[0] == f"已接受{'动图' if animated else '生图'}任务，id"
+
+
+async def test_command_acceptance_template_and_task_details(plugin):
+    plugin.settings = Settings({"image": {"acceptance_template": "{kind}已排队：{task_id}"}})
+    reply = [item async for item in plugin.image_command(Event(text="/生图 一只猫"))][0]
+    assert reply == "生图已排队：id"
+    plugin.service.public_api.get_task.return_value = {
+        "task_id": "id", "kind": "image", "status": "succeeded", "generated": 1,
+        "requested": 1, "reference_count": 2, "delivery_status": "unknown",
+    }
+    detail = await plugin._task_command(Event(), "id")
+    assert "参考图：2 张" in detail
+    assert "投递：未确认" in detail
+    plugin.service.public_api.get_task.return_value["delivery_status"] = "sent"
+    assert "投递：已发送" in await plugin._task_command(Event(), "id")
 
 
 async def test_command_invalid_parameters_do_not_submit(plugin):

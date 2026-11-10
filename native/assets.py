@@ -190,11 +190,22 @@ class AssetStore:
             assets = []
         else:
             assets = await self.from_event(event, actor)
-            if not assets:
+            # An explicit reply selects that message as the reference source.
+            # Do not substitute an unrelated recent image if the quote has no image.
+            has_reply = any(
+                type(part).__name__ == "Reply"
+                for part in (event.get_messages() if hasattr(event, "get_messages") else [])
+            )
+            if not assets and not has_reply:
                 saved = await self.store.asset_get(actor)
                 assets = [InputAsset(**saved)] if saved else []
         # Repeated images do not consume separate reference positions.
-        unique = list({a.sha256: a for a in assets}.values())
+        unique = []
+        seen = set()
+        for asset in assets:
+            if asset.sha256 not in seen:
+                unique.append(asset)
+                seen.add(asset.sha256)
         if len(unique) > self.settings.feature("image")["max_references"]:
             raise NativeError("invalid_request", "Too many reference images")
         if request.action == "edit" and not unique:

@@ -13,11 +13,13 @@ _OPTIONS = {
     "--数量": "n",
     "--比例": "aspect_ratio",
     "--分辨率": "resolution",
+    "--预设": "preset",
     "--尺寸": "size",
     "--格式": "output_format",
     "--帧数": "frame_count",
     "--帧时长": "frame_duration_ms",
 }
+_NATURAL_OPTIONS = {"比例": "aspect_ratio", "分辨率": "resolution"}
 _RATIOS = {
     "1:1",
     "1:2",
@@ -60,6 +62,11 @@ def _integer(value: str, low: int, high: int, label: str) -> int:
 
 def _value(field: str, value: str, *, animated: bool) -> str | int:
     value = _unquote(value)
+    if field == "preset":
+        value = value.strip()
+        if not value or len(value) > 40 or re.search(r"[\[\]\r\n]", value):
+            raise _invalid("预设名称不能为空、超过 40 字符或包含方括号及换行。")
+        return value
     if field == "n":
         return _integer(value, 1, 4, "图片数量")
     if field == "aspect_ratio":
@@ -112,14 +119,34 @@ def _shorthand(value: str) -> str | None:
     return None
 
 
-def parse_image_command(text: str, *, animated: bool = False) -> ImageRequest:
+async def quoted_prompt_from_event(event) -> str | None:
+    """Read text only from an explicitly quoted message, using AstrBot's resolver."""
+    reply = next(
+        (
+            part
+            for part in (event.get_messages() if hasattr(event, "get_messages") else [])
+            if type(part).__name__ == "Reply"
+        ),
+        None,
+    )
+    if reply is None:
+        return None
+    from astrbot.core.utils.quoted_message import extract_quoted_message_text
+
+    return await extract_quoted_message_text(event, reply_component=reply)
+
+
+def parse_image_command(
+    text: str, *, animated: bool = False, quoted_text: str | None = None
+) -> ImageRequest:
     """Parse text after /生图 or /生动图; leave model limits to the service.
 
     Explicit options accept ``--参数 值`` or ``--参数=值`` anywhere outside
     quoted text. Shorthand values must form a contiguous suffix in the original
     input; an explicit option ends that suffix. Quotes in the prompt are kept.
-    Static output defaults to png; animated output is always gif. Other omitted
-    fields retain ImageRequest defaults for configuration resolution.
+    Natural 比例/分辨率 pairs are recognized only in the argument suffix. A
+    supplied quote is used only when the command has no prompt of its own.
+    Static output defaults to png; animated output is always gif.
     """
     if not isinstance(text, str):
         raise _invalid("请输入图片提示词。")
@@ -152,14 +179,26 @@ def parse_image_command(text: str, *, animated: bool = False) -> ImageRequest:
             raise _invalid(f"参数 {name} 缺少取值。")
         add(_OPTIONS[name], value)
 
+    bare_suffix = True
     for index in range(len(tokens) - 1, -1, -1):
         if index in removed:
-            break
+            bare_suffix = False
+            continue
         field = _shorthand(tokens[index].group())
-        if field is None:
+        if (
+            field is not None
+            and index > 0
+            and index - 1 not in removed
+            and _NATURAL_OPTIONS.get(tokens[index - 1].group()) == field
+        ):
+            add(field, tokens[index].group())
+            removed.update((index - 1, index))
+            bare_suffix = True
+        elif field is not None and bare_suffix:
+            add(field, tokens[index].group())
+            removed.add(index)
+        else:
             break
-        add(field, tokens[index].group())
-        removed.add(index)
 
     if options.get("size", "auto") != "auto" and ("aspect_ratio" in options or "resolution" in options):
         raise _invalid("--尺寸 的宽高不能与 --比例 或 --分辨率 同时使用；请选择一种方式。")
@@ -172,6 +211,11 @@ def parse_image_command(text: str, *, animated: bool = False) -> ImageRequest:
         cursor = token.end()
     parts.append(text[cursor:])
     prompt = "".join(parts).strip()
+    if not prompt and isinstance(quoted_text, str):
+        prompt = quoted_text.strip()
+    preset = options.pop("preset", None)
+    if preset:
+        prompt = f"[预设:{preset}]" + (f" {prompt}" if prompt else "")
     if not prompt or not _unquote(prompt).strip():
         raise _invalid("请输入图片提示词。")
     if len(prompt) > 32000:

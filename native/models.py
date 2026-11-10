@@ -72,7 +72,7 @@ class Connection:
 @dataclass(frozen=True)
 class SearchRequest:
     queries: list[str]
-    max_results: int = 5
+    max_results: int = 3
     recency: int | None = None
     domains: list[str] = field(default_factory=list)
 
