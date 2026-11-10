@@ -56,7 +56,7 @@ actor_from_event = importlib.import_module(ROOT.name + ".native.identity").actor
 class FakeEvent(AstrMessageEvent):
     """Use real event identity/results; capture delivery at the adapter boundary."""
 
-    def __init__(self, case, *, admin=False, components=()):
+    def __init__(self, case, *, admin=False, components=(), text=None):
         message = AstrBotMessage()
         message.type = MessageType.GROUP_MESSAGE
         message.self_id = "execution-bot"
@@ -64,7 +64,7 @@ class FakeEvent(AstrMessageEvent):
         message.message_id = "real-execution-" + case
         message.sender = MessageMember("execution-user", "Executor test")
         message.message = list(components)
-        message.message_str = "executor integration " + case
+        message.message_str = text if text is not None else "executor integration " + case
         message.raw_message = {}
         super().__init__(
             message.message_str,
@@ -193,7 +193,7 @@ async def execute_text(plugin, event, name, *, tools=None, **arguments):
     results = [result async for result in FunctionToolExecutor.execute(tool, context, **arguments)]
     assert len(results) == 1 and isinstance(results[0], CallToolResult), results
     result = results[0]
-    assert not result.isError and len(result.content) == 1
+    assert not result.model_dump(by_alias=True)["isError"] and len(result.content) == 1
     assert isinstance(result.content[0], TextContent)
     return result.content[0].text
 
@@ -211,11 +211,8 @@ async def check_search(plugin, event, upstream, *, tools=None):
         )
     )
     assert result["status"] == "succeeded" and result["untrusted"] is True, result
-    assert result["queries"] == ["AstrBot executor"]
-    assert result["sources"][0]["url"] == "https://astrbot.app/"
-    assert result["sources"][0]["snippet"] == "Official documentation"
-    assert result["backend_synthesis"] == "A source-backed upstream summary."
-    assert result["usage"]["observed_web_search_calls"] == 1
+    assert set(result) == {"operation_id", "status", "sources", "untrusted"}
+    assert result["sources"] == [{"title": "AstrBot", "snippet": "Official documentation"}]
     assert (await plugin.service.get_task(event, result["operation_id"]))["status"] == "succeeded"
     body = json.loads(upstream.requests[0].content)
     assert body["model"] == "search-model"
@@ -349,7 +346,7 @@ async def check_persona_permissions(plugin, upstream):
     request_tools = await filtered_tools(plugin, event, ToolSet())
     assert request_tools.empty()
     assert (await plugin.build_tools(event)).empty()  # Snapshot must not resurrect excluded tools.
-    partial_event = FakeEvent("persona-search-only")
+    partial_event = FakeEvent("persona-search-only", text="请搜索 AstrBot executor")
     persona["tools"] = ["openai_web_search"]
     partial_tools = await plugin.build_tools(partial_event)
     assert [tool.name for tool in partial_tools] == ["openai_web_search"]
@@ -443,7 +440,7 @@ async def run(case, data_dir):
         if case == "persona_permissions":
             await check_persona_permissions(plugin, upstream)
         elif case == "search":
-            await check_search(plugin, FakeEvent(case), upstream)
+            await check_search(plugin, FakeEvent(case, text="请搜索 AstrBot executor"), upstream)
         else:
             await check_image(plugin, FakeEvent(case), upstream, data_dir, case)
         assert len(upstream.requests) == 1, [
