@@ -80,6 +80,7 @@ class Store:
             );
             CREATE INDEX IF NOT EXISTS operations_owner ON operations(owner, created);
             CREATE INDEX IF NOT EXISTS operations_status ON operations(status);
+            CREATE INDEX IF NOT EXISTS operations_created ON operations(created DESC, id DESC);
             CREATE INDEX IF NOT EXISTS assets_owner ON assets(owner, expires);
         """)
 
@@ -121,6 +122,67 @@ class Store:
                 (actor.owner_key, min(50, max(1, limit))),
             ) as cur:
                 return [self._row(row) for row in await cur.fetchall()]
+
+    async def page_tasks(self, offset: int, limit: int, kind: str, status: str):
+        conditions, params = [], []
+        for column, value in (("kind", kind), ("status", status)):
+            if value != "all":
+                conditions.append(column + "=?")
+                params.append(value)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        async with self.lock:
+            total = (await self._one("SELECT COUNT(*) AS n FROM operations" + where, params))["n"]
+            async with self.db.execute(
+                "SELECT id,kind,status,request,created,updated,requested,actual,delivery_status,error "
+                "FROM operations" + where + " ORDER BY created DESC,id DESC LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ) as cur:
+                items = [dict(row) for row in await cur.fetchall()]
+            async with self.db.execute(
+                "SELECT kind,status,COUNT(*) AS n FROM operations GROUP BY kind,status"
+            ) as cur:
+                counts = await cur.fetchall()
+        summary = {
+            feature: {"total": 0, "active": 0, "succeeded": 0, "failed": 0}
+            for feature in ("search", "image")
+        }
+        for row in counts:
+            if row["kind"] not in summary:
+                continue
+            entry = summary[row["kind"]]
+            entry["total"] += row["n"]
+            if row["status"] in ACTIVE:
+                entry["active"] += row["n"]
+            elif row["status"] in ("succeeded", "failed"):
+                entry[row["status"]] += row["n"]
+        for item in items:
+            for name in ("request", "error"):
+                item[name] = json.loads(item[name]) if item[name] is not None else None
+        return {"items": items, "total": total, "offset": offset, "limit": limit, "summary": summary}
+
+    async def page_gallery(self, offset: int, limit: int):
+        source = " FROM operations o JOIN json_each(o.artifacts) a WHERE o.kind='image'"
+        async with self.lock:
+            total = (await self._one("SELECT COUNT(*) AS n" + source))["n"]
+            async with self.db.execute(
+                "SELECT o.id AS task_id,o.request,o.created,a.value AS artifact" + source
+                + " ORDER BY o.created DESC,o.id DESC,CAST(a.key AS INTEGER) LIMIT ? OFFSET ?",
+                (limit, offset),
+            ) as cur:
+                items = [dict(row) for row in await cur.fetchall()]
+        for item in items:
+            item["request"] = json.loads(item["request"])
+            item["artifact"] = json.loads(item["artifact"])
+        return {"items": items, "total": total, "offset": offset, "limit": limit}
+
+    async def page_artifact(self, task_id: str, artifact_id: str):
+        async with self.lock:
+            row = await self._one(
+                "SELECT a.value AS artifact FROM operations o JOIN json_each(o.artifacts) a "
+                "WHERE o.id=? AND o.kind='image' AND json_extract(a.value,'$.artifact_id')=? LIMIT 1",
+                (task_id, artifact_id),
+            )
+        return json.loads(row["artifact"]) if row else None
 
     async def reserve(
         self,

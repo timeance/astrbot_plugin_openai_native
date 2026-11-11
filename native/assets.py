@@ -55,11 +55,6 @@ class AssetStore:
                         )
                     if frames * width * height > self.settings.feature("image")["max_frames_pixels"]:
                         raise NativeError("file_too_large", "Animation exceeds the configured pixel budget")
-                    if reference and frames > 1:
-                        raise NativeError(
-                            "animated_input_unsupported",
-                            "Animated image editing is outside this plugin's scope",
-                        )
                     duration = image.info.get("duration") if frames > 1 else None
                     # Decode all frames before accepting; never re-encode the original bytes.
                     for frame in range(frames):
@@ -86,8 +81,18 @@ class AssetStore:
 
             await asyncio.to_thread(write)
 
+    def _reference_data(self, data):
+        mime, width, height, frames, _ = self.inspect(data, reference=True)
+        if frames > 1:
+            with Image.open(io.BytesIO(data)) as image:
+                stream = io.BytesIO()
+                image.convert("RGBA").save(stream, format="PNG")
+            data = stream.getvalue()
+            mime, width, height, _, _ = self.inspect(data, reference=True)
+        return data, mime, width, height
+
     async def import_data(self, actor, data):
-        mime, width, height, _, _ = await asyncio.to_thread(self.inspect, data, reference=True)
+        data, mime, width, height = await asyncio.to_thread(self._reference_data, data)
         identity = uuid.uuid4().hex
         path = self.root / "references" / (identity + "." + EXT[mime])
         await self._write(path, data)

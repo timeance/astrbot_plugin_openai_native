@@ -2,8 +2,10 @@
 
 import ast
 import asyncio
+import base64
 import contextvars
 import inspect
+import io
 import json
 import os
 import re
@@ -16,12 +18,15 @@ from typing import Generic, TypeVar, overload
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 
 import native.page as page
+from native.assets import AssetStore
 from native.capabilities import CapabilityRegistry
 from native.config import DEFAULTS, Settings
-from native.models import Connection, NativeError
+from native.models import Actor, Connection, NativeError
 from native.page import PageAPI, PageError
+from native.store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = Path(
@@ -492,7 +497,7 @@ def actual_host(monkeypatch, setup_page):
     api.context = ctx
     assert api.register() is None
     api.register()  # The real registration contract must replace, never duplicate.
-    assert len(ctx.registered_web_apis) == 10
+    assert len(ctx.registered_web_apis) == 16
     namespace = {
         "contextvars": contextvars,
         "contextmanager": contextmanager,
@@ -571,7 +576,7 @@ async def test_actual_host_registration_dispatches_get_post_and_bridge_alias(act
         )
         assert result.status_code == 200 and result.data["values"]["search"]["model"] == prefix
     assert not inspect.iscoroutinefunction(api.register)
-    assert len(ctx.registered_web_apis) == 10
+    assert len(ctx.registered_web_apis) == 16
 
 
 @pytest.mark.parametrize(
@@ -582,6 +587,9 @@ async def test_actual_host_registration_dispatches_get_post_and_bridge_alias(act
         ("providers", "GET"),
         ("diagnostics", "GET"),
         ("capabilities/reset", "POST"),
+        ("tasks/query", "POST"),
+        ("gallery/query", "POST"),
+        ("gallery/preview", "POST"),
     ],
 )
 async def test_actual_bound_request_rejects_anonymous_even_with_admin_body(endpoint, method, actual_host):
@@ -764,3 +772,215 @@ async def test_bridge_conflict_message_survives_host_string_only_errors(actual_h
     assert result.status_code == 409
     assert result.data["code"] == "conflict"
     assert "版本冲突" in result.data["message"]
+
+
+@pytest.fixture
+async def recorded_page(setup_page, tmp_path, png_data, gif_data):
+    api, _, _, service = setup_page
+    settings = Settings({"limits": {"min_interval_seconds": 0, "admin_exempt": True}})
+    store = Store(tmp_path / "operations.sqlite3", settings)
+    await store.initialize()
+    service.store = store
+    service.assets = AssetStore(tmp_path / "files", settings, None, store)
+    connection = Connection("provider", "https://example.com", "private-key", fingerprint="fingerprint")
+    rows = (
+        ("search-old", "search", "succeeded"),
+        ("search-failed", "search", "failed"),
+        ("image-old", "image", "succeeded"),
+        ("image-running", "image", "running"),
+        ("image-new", "image", "partial"),
+    )
+    for index, (task_id, kind, status) in enumerate(rows):
+        actor = Actor("platform", "bot", task_id, "private-conversation", is_admin=True)
+        request = (
+            {"queries": ["first query", "second query"]}
+            if kind == "search"
+            else {"options": {"prompt": "参考图 " + "画" * 600}, "assets": [{"path": "private-input"}]}
+        )
+        await store.reserve(
+            operation_id=task_id, kind=kind, actor=actor, request=request,
+            connection=connection, units=1, idempotency_key=task_id, request_hash=task_id,
+        )
+        await store.settle(task_id, int(status in ("succeeded", "partial")), 0, status=status)
+        await store.db.execute(
+            "UPDATE operations SET created=?,updated=? WHERE id=?", (1000 + index, 2000 + index, task_id)
+        )
+    await store.update("search-failed", error={
+        "category": "upstream_error", "message": "private-key C:/private/request.json https://secret.example",
+        "status_code": 502, "upstream_code": "private-key", "request_id": "private-key",
+        "request": "private-request", "ambiguous": False,
+    })
+    for task_id, artifact_id, data, mime in (
+        ("image-old", "old-0", png_data, "image/png"),
+        ("image-old", "old-1", None, "image/png"),
+        ("image-new", "new-0", gif_data, "image/gif"),
+    ):
+        path = service.assets.root / "artifacts" / (artifact_id + ".bin")
+        if data is not None:
+            path.write_bytes(data)
+        await store.append(task_id, "artifacts", {
+            "artifact_id": artifact_id, "path": str(path), "mime": mime,
+            "width": 32, "height": 32, "frame_count": 2 if mime == "image/gif" else 1,
+            "size_bytes": len(data or b""), "sha256": "private-hash",
+        })
+    try:
+        yield api
+    finally:
+        await store.close()
+
+
+async def test_tasks_database_pagination_filters_summary_and_safe_fields(recorded_page):
+    api = recorded_page
+    result = await api.tasks({"offset": 1, "limit": 2})
+    assert result["total"] == 5 and result["offset"] == 1 and result["limit"] == 2
+    assert type(result["offset"]) is int and type(result["limit"]) is int
+    assert [item["id"] for item in result["items"]] == ["image-running", "image-old"]
+    assert result["summary"] == {
+        "search": {"total": 2, "active": 0, "succeeded": 1, "failed": 1},
+        "image": {"total": 3, "active": 1, "succeeded": 1, "failed": 0},
+    }
+    assert all(len(item["prompt"]) == 500 for item in result["items"])
+    filtered = await api.tasks({"kind": "search", "status": "failed"})
+    assert filtered["total"] == 1 and filtered["limit"] == 20
+    assert filtered["summary"] == result["summary"]
+    item = filtered["items"][0]
+    assert item["prompt"] == "first query / second query"
+    assert item["error"] == {
+        "category": "upstream_error", "message": "任务未完成，详细错误已隐藏。",
+        "status_code": 502, "ambiguous": False,
+    }
+    assert set(item) == {
+        "id", "kind", "status", "created", "updated", "requested", "actual",
+        "delivery_status", "prompt", "error",
+    }
+    assert "private" not in json.dumps(result) + json.dumps(filtered)
+    empty = await api.tasks({"offset": 100})
+    assert empty["items"] == [] and empty["total"] == 5
+    assert (await api.service.store._one("SELECT COUNT(*) AS n FROM quota"))["n"] == 0
+
+
+async def test_gallery_paginates_artifacts_and_reports_missing_without_paths(recorded_page):
+    result = await recorded_page.gallery({"offset": 1, "limit": 2})
+    assert result["total"] == 3 and result["offset"] == 1 and result["limit"] == 2
+    assert [item["artifact_id"] for item in result["items"]] == ["old-0", "old-1"]
+    assert [item["available"] for item in result["items"]] == [True, False]
+    assert set(result["items"][0]) == {
+        "task_id", "artifact_id", "prompt", "created", "mime", "width", "height",
+        "frame_count", "available",
+    }
+    assert "private" not in json.dumps(result) and "path" not in json.dumps(result)
+    assert (await recorded_page.gallery({}))["limit"] == 12
+    empty = await recorded_page.gallery({"offset": 10})
+    assert empty["items"] == [] and empty["total"] == 3
+
+
+async def test_preview_first_frame_thumbnail_and_original_gif(recorded_page, gif_data):
+    request = {"task_id": "image-new", "artifact_id": "new-0"}
+    thumbnail = await recorded_page.preview({**request, "thumbnail": True})
+    assert thumbnail["mime"] == "image/png" and thumbnail["first_frame"] is True
+    assert thumbnail["data_url"].startswith("data:" + "image/png;base64,")
+    with Image.open(io.BytesIO(base64.b64decode(thumbnail["data_url"].split(",", 1)[1]))) as image:
+        assert image.format == "PNG" and image.size == (32, 32)
+        assert getattr(image, "n_frames", 1) == 1 and image.getpixel((0, 0)) == (255, 0, 0, 255)
+    full = await recorded_page.preview({**request, "thumbnail": False})
+    assert full["mime"] == "image/gif" and full["first_frame"] is False
+    assert base64.b64decode(full["data_url"].split(",", 1)[1]) == gif_data
+
+
+@pytest.mark.parametrize("thumbnail,side", [(True, 320), (False, 1280)])
+async def test_preview_resizes_static_images(recorded_page, thumbnail, side):
+    artifact = await recorded_page.service.store.page_artifact("image-old", "old-0")
+    Image.new("RGB", (1600, 800), "blue").save(artifact["path"], format="PNG")
+    result = await recorded_page.preview({
+        "task_id": "image-old", "artifact_id": "old-0", "thumbnail": thumbnail,
+    })
+    with Image.open(io.BytesIO(base64.b64decode(result["data_url"].split(",", 1)[1]))) as image:
+        assert image.size == (side, side // 2)
+    assert result["mime"] == "image/png" and result["first_frame"] is False
+
+
+@pytest.mark.parametrize("method,payload", [
+    ("tasks", {"offset": True}), ("tasks", {"offset": -1}),
+    ("tasks", {"limit": 51}), ("tasks", {"limit": 0}),
+    ("tasks", {"limit": 1.0}), ("tasks", {"kind": "other"}),
+    ("tasks", {"status": "other"}), ("gallery", {"path": "private"}),
+    ("preview", {"task_id": "../image-old", "artifact_id": "old-0"}),
+    ("preview", {"task_id": "image-old", "artifact_id": "old-0", "thumbnail": 1}),
+    ("preview", {"task_id": "image-old", "artifact_id": "old-0", "path": "private"}),
+])
+async def test_readonly_query_validation(method, payload, setup_page):
+    api = setup_page[0]
+    with pytest.raises(PageError) as error:
+        await getattr(api, method)(payload)
+    assert error.value.status == 400
+
+
+@pytest.mark.parametrize("task_id,artifact_id", [
+    ("image-old", "old-1"), ("image-old", "new-0"), ("unknown", "old-0"),
+])
+async def test_preview_missing_or_unregistered_artifacts_are_404(recorded_page, task_id, artifact_id):
+    with pytest.raises(PageError) as error:
+        await recorded_page.preview({"task_id": task_id, "artifact_id": artifact_id})
+    assert error.value.status == 404 and "path" not in error.value.message
+
+
+async def test_preview_rejects_registered_path_outside_artifacts_and_traversal(recorded_page, png_data):
+    api = recorded_page
+    outside = api.service.assets.root / "outside.png"
+    outside.write_bytes(png_data)
+    for identity, path in (("outside", outside), ("traversal", outside.parent / "artifacts" / ".." / outside.name)):
+        await api.service.store.append("image-old", "artifacts", {
+            "artifact_id": identity, "path": str(path), "mime": "image/png", "width": 32, "height": 32,
+        })
+        with pytest.raises(PageError) as error:
+            await api.preview({"task_id": "image-old", "artifact_id": identity})
+        assert error.value.status == 404 and str(outside) not in error.value.message
+
+
+async def test_preview_rejects_symlink_outside_artifacts(recorded_page, png_data):
+    api = recorded_page
+    outside = api.service.assets.root / "outside.png"
+    outside.write_bytes(png_data)
+    artifact = await api.service.store.page_artifact("image-old", "old-0")
+    path = Path(artifact["path"])
+    path.unlink()
+    try:
+        path.symlink_to(outside)
+    except OSError:
+        pytest.skip("Creating symlinks requires a host capability unavailable in this test environment")
+    with pytest.raises(PageError) as error:
+        await api.preview({"task_id": "image-old", "artifact_id": "old-0"})
+    assert error.value.status == 404
+
+
+async def test_preview_checks_file_size_before_read_and_bounds_pixels(recorded_page, monkeypatch):
+    api = recorded_page
+    request = {"task_id": "image-old", "artifact_id": "old-0"}
+    monkeypatch.setattr(page, "_PREVIEW_READ_BYTES", 1)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", lambda *args, **kwargs: pytest.fail("oversized file must not be read"))
+        with pytest.raises(PageError) as error:
+            await api.preview(request)
+        assert error.value.status == 413
+    monkeypatch.setattr(page, "_PREVIEW_READ_BYTES", 32 * 1024 * 1024)
+    artifact = await api.service.store.page_artifact("image-old", "old-0")
+    Image.new("1", (5000, 4000)).save(artifact["path"], format="PNG")
+    with pytest.raises(PageError) as error:
+        await api.preview(request)
+    assert error.value.status == 413
+
+
+async def test_readonly_routes_dispatch_both_prefixes_with_auth_and_no_store(actual_host, recorded_page):
+    api, _, call, _ = actual_host
+    api.service = recorded_page.service
+    for prefix in ("openai-native", "astrbot_plugin_openai_native/openai-native"):
+        for suffix, body in (
+            ("tasks/query", {"limit": 1}), ("gallery/query", {"limit": 1}),
+            ("gallery/preview", {"task_id": "image-new", "artifact_id": "new-0", "thumbnail": True}),
+        ):
+            result, _ = await call(prefix + "/" + suffix, method="POST", body=body)
+            assert result.status_code == 200 and result.headers["Cache-Control"] == "no-store"
+        result, _ = await call(prefix + "/gallery/preview", method="POST", body={
+            "task_id": "image-new", "artifact_id": "missing",
+        })
+        assert result.status_code == 404 and result.headers["Cache-Control"] == "no-store"

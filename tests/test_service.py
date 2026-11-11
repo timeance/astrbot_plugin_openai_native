@@ -200,11 +200,20 @@ async def test_gif_keeps_original_bytes_and_per_call_frame_settings(tmp_path, ev
         assert Path(artifacts[0].path).read_bytes() == gif_data
         request = service.image_adapter.generate.await_args.args[1]
         assert request.frame_duration_ms == 30
-        with pytest.raises(NativeError) as caught:
-            await service.public_api.submit_image(
-                event_factory(message="m2"), ImageRequest("edit", action="edit", references=[gif_data])
-            )
-        assert caught.value.category == "animated_input_unsupported"
+        edited = await service.public_api.submit_image(
+            event_factory(message="m2"),
+            ImageRequest("edit", action="edit", references=[gif_data], output_format="gif"),
+        )
+        await service.queue.join()
+        assert (await service.get_task(event, edited.task_id))["status"] == "succeeded"
+        reference = service.image_adapter.generate.await_args.args[2][0]
+        from PIL import Image
+
+        assert reference.mime == "image/png"
+        with Image.open(reference.path) as image:
+            assert image.format == "PNG" and image.n_frames == 1
+            assert image.getpixel((0, 0)) == (255, 0, 0, 255)
+        assert Path((await service.get_results(event, edited.task_id))[0].path).read_bytes() == gif_data
     finally:
         await service.close()
 

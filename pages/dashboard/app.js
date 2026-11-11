@@ -38,7 +38,9 @@
   const state = {
     bridge: null, context: null, snapshot: null, providers: [], diagnostics: null,
     loaded: false, loading: false, saving: false, refreshing: false, resetting: false,
-    conflict: false, currentTab: "overview", theme: "host"
+    conflict: false, currentTab: "overview", theme: "host", summary: null,
+    tasks: { offset: 0, limit: 20, total: 0, sequence: 0 },
+    gallery: { offset: 0, limit: 12, total: 0, sequence: 0 }, previewSequence: 0
   };
   const controls = new Map();
   const sourceControls = new Map();
@@ -54,15 +56,18 @@
     ["search-connection", "search", "搜索连接", "使用当前会话、固定供应商，或独立的手动 API。"],
     ["search-bounds", "search", "触发与查询", "按需搜索由主代理判断是否需要；明确触发仅响应用户明确的搜索请求。"],
     ["search-display", "search", "结果摘要与来源信息", "控制提供给模型的搜索内容；最终回复由模型生成。"],
+    ["search-quota", "search", "搜索额度与并发", "命令与自然语言共用每日额度。填写 0 表示不限，搜索按次计。"],
+    ["search-advanced", "search", "搜索连接参数", ""],
     ["image-connection", "image", "图片连接", "搜索与图片独立。图片模型不会自动使用聊天模型。"],
     ["image-prompt", "image", "任务提示与绘图预设", "按名称保存绘图提示词，任务受理回执可单独设置。"],
     ["image-output", "image", "输出约束", ""],
     ["gif", "image", "原生 GIF", "默认关闭。需上游原生 GIF 支持；不会在本地拼接静态帧。"],
-    ["quota", "limits", "每日额度", "搜索按次、图片按张计。填写 0 表示不限；每日边界按所选时区计算。"],
-    ["schedule", "limits", "频率、并发与队列", ""],
-    ["storage", "limits", "文件与记录保存", "文件大小以字节填写，字段下显示换算。任务记录保留天数不得短于结果文件。"],
-    ["search-advanced", "advanced", "搜索 · 连接参数", ""],
-    ["image-advanced", "advanced", "图片 · 连接参数", ""],
+    ["image-quota", "image", "生图每日额度", "命令与自然语言共用每日额度。填写 0 表示不限，图片按张计。"],
+    ["image-schedule", "image", "生图并发与队列", ""],
+    ["storage", "image", "参考图、结果文件与记录保存", "文件大小以字节填写，字段下显示换算。任务记录保留天数不得短于结果文件。"],
+    ["image-advanced", "image", "图片连接参数", ""],
+    ["quota", "advanced", "共用额度规则", "每日边界按所选时区计算。"],
+    ["schedule", "advanced", "共用请求频率", ""],
     ["network", "advanced", "下载与网络", "私有下载主机仅在确实需要时放行，按主机填写。"]
   ];
 
@@ -131,14 +136,14 @@
   field("limits.timezone", "每日重置时区", "text", "quota", { placeholder: "UTC", hint: "IANA 时区，例如 Asia/Shanghai、Asia/Hong_Kong 或 UTC。" });
   for (const [prefix, title, unit] of [["search", "搜索", "次/日"], ["image", "图片", "张/日"]]) {
     for (const [scope, label] of [["user", "用户"], ["group", "群组"], ["private", "私聊"]]) {
-      field("limits." + scope + "_" + prefix, label + title + "额度", "number", "quota", { min: 0, unit, hint: "0 表示不限。" });
+      field("limits." + scope + "_" + prefix, label + title + "额度", "number", prefix + "-quota", { min: 0, unit, hint: "0 表示不限。" });
     }
   }
   field("limits.admin_exempt", "管理员免除每日额度", "boolean", "quota", { hint: "仅影响额度，不代表上游免费。" });
   for (const [key, label, unit] of [
     ["search_concurrency", "搜索并发", "个"], ["image_concurrency", "图片并发", "个"],
     ["queue_size", "图片队列容量", "个任务"], ["user_image_concurrency", "单用户图片并发", "个"]
-  ]) field("limits." + key, label, "number", "schedule", { min: 1, unit });
+  ]) field("limits." + key, label, "number", key === "search_concurrency" ? "search-quota" : "image-schedule", { min: 1, unit });
   field("limits.min_interval_seconds", "用户请求最小间隔", "number", "schedule", { min: 0, integer: false, unit: "秒" });
   for (const [key, label, unit] of [
     ["reference_ttl_seconds", "近期参考图缓存", "秒"], ["artifact_days", "结果文件保留", "天"],
@@ -181,6 +186,9 @@
       if (selected && focus) node.focus();
     });
     document.querySelectorAll(".tab-panel").forEach((node) => { node.hidden = node.id !== "panel-" + name; });
+    updateSaveBar();
+    if (name === "tasks") loadTasks();
+    if (name === "gallery") loadGallery();
   }
   function focusField(path) {
     const entry = fieldByPath.get(path);
@@ -344,7 +352,7 @@
     else if (entry.type === "json") input.value = typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 2);
     else if (entry.type === "list") input.value = Array.isArray(value) ? value.join("\n") : typeof value === "string" ? value : "";
     else {
-      const normalized = entry.group === "quota" && value === -1 ? 0 : value;
+      const normalized = entry.group.endsWith("quota") && value === -1 ? 0 : value;
       const displayed = entry.type === "number" && normalized !== null && normalized !== undefined && entry.displayOffset
         ? Number(normalized) + entry.displayOffset : normalized;
       const text = displayed === null || displayed === undefined ? "" : String(displayed);
@@ -549,6 +557,11 @@
     $("save-hint").textContent = result.errors.size ? "存在 " + result.errors.size + " 项输入错误，请修正后保存。" : "保存只持久化；请在 AstrBot 插件管理中手动重载后生效。";
     const summary = $("validation-summary");
     if (summary.dataset.revealed === "true") renderValidation(result.errors);
+    updateSaveBar(count);
+  }
+  function updateSaveBar(dirty) {
+    const count = dirty ?? (state.loaded ? collect().dirty.length : 0);
+    $("save-bar").hidden = !["search", "image", "advanced"].includes(state.currentTab) && !count;
   }
   function renderValidation(errors) {
     const summary = $("validation-summary");
@@ -612,7 +625,9 @@
     disabled: ["已关闭", ""], configuration: ["配置未就绪", "warn"],
     awaiting_session: ["等待会话验证", "warn"], queued: ["已排队", ""],
     running: ["执行中", ""], completed: ["已完成", "good"], partial: ["部分完成", "warn"],
-    cancelled: ["已取消", ""], needs_reconciliation: ["待人工核对", "warn"]
+    cancelled: ["已取消", ""], needs_reconciliation: ["待人工核对", "warn"],
+    succeeded: ["成功", "good"], receiving: ["接收结果中", ""],
+    cancel_requested: ["取消中", "warn"], result_unavailable: ["结果不可用", "warn"]
   };
   function badge(text, kind = "") { return element("span", "badge" + (kind ? " " + kind : ""), text); }
   function statusBadge(value) {
@@ -634,13 +649,21 @@
     const features = state.diagnostics?.features || {};
     for (const [name, title] of [["search", "网页搜索"], ["image", "生图与 GIF"]]) {
       const feature = features[name];
-      const card = element("section", "surface readiness-card");
+      const card = element("section", "surface readiness-card " + name + "-card");
       const heading = element("div", "card-title");
       heading.append(element("h3", "", title));
       if (!feature) heading.append(badge("状态未读取"));
       else if (feature.reason_code === "awaiting_session") heading.append(badge("等待会话验证", "warn"));
       else heading.append(badge(feature.configuration_ready === true ? "配置就绪" : "配置未就绪", feature.configuration_ready ? "good" : "warn"));
       card.append(heading);
+      const metrics = element("div", "feature-metrics");
+      const summary = state.summary?.[name];
+      for (const [key, label] of [["total", "保留任务"], ["active", "进行中"], ["succeeded", "成功"], ["failed", "失败"]]) {
+        const metric = element("div");
+        metric.append(element("strong", "", summary ? String(summary[key] ?? 0) : "—"), element("span", "", label));
+        metrics.append(metric);
+      }
+      card.append(metrics);
       const lines = element("div", "state-lines");
       const selectedMode = feature?.mode || get(state.snapshot?.active_values, name + ".mode");
       lines.append(stateLine("连接来源", selectedMode === "current" ? "当前会话" : selectedMode === "manual" ? "手动 API" : selectedMode === "provider" ? "固定供应商" : "未提供"));
@@ -681,6 +704,19 @@
         }
         card.append(list);
       }
+      const actions = element("div", "feature-actions");
+      const settings = element("button", "button", name === "search" ? "搜索设置" : "生图设置");
+      settings.type = "button"; settings.addEventListener("click", () => showTab(name, true));
+      const tasks = element("button", "button small", "查看任务");
+      tasks.type = "button";
+      tasks.addEventListener("click", () => { $("task-kind").value = name; state.tasks.offset = 0; showTab("tasks", true); });
+      actions.append(settings, tasks);
+      if (name === "image") {
+        const gallery = element("button", "button small", "打开图库");
+        gallery.type = "button"; gallery.addEventListener("click", () => showTab("gallery", true));
+        actions.append(gallery);
+      }
+      card.append(actions);
       container.append(card);
     }
   }
@@ -769,6 +805,173 @@
     }
     if (list.childNodes.length) notice.append(list);
     container.append(notice);
+  }
+  async function refreshSummary() {
+    try {
+      const result = await request("POST", "tasks/query", { offset: 0, limit: 1, kind: "all", status: "all" });
+      if (!result?.summary) throw new Error("invalid_summary");
+      state.summary = result.summary;
+      $("summary-status").textContent = "任务统计已更新，含命令与自然语言调用。";
+      renderReadiness();
+    } catch {
+      $("summary-status").textContent = "任务统计读取失败，可点击刷新概览重试。已有统计保留。";
+    }
+  }
+  function pageControls(name, loading = false) {
+    const page = state[name];
+    $(name + "-prev").disabled = loading || page.offset === 0;
+    $(name + "-next").disabled = loading || page.offset + page.limit >= page.total;
+    $(name + "-page").textContent = "第 " + (Math.floor(page.offset / page.limit) + 1) + " / " + Math.max(1, Math.ceil(page.total / page.limit)) + " 页 · 共 " + page.total + (name === "tasks" ? " 个任务" : " 张图片");
+  }
+  function renderTasks(items) {
+    const container = $("task-list");
+    container.replaceChildren();
+    container.className = "surface";
+    if (!items.length) {
+      container.append(element("p", "empty-state", $("task-kind").value !== "all" || $("task-status").value !== "all"
+        ? "没有符合筛选条件的任务，可切换功能或状态。" : "暂无任务。在聊天中使用搜索、生图命令，或通过自然语言调用后，点击刷新。"));
+      return;
+    }
+    const scroll = element("div", "table-scroll");
+    const table = element("table", "task-table");
+    const head = element("thead"), header = element("tr");
+    for (const title of ["时间", "功能 / 任务", "状态", "结果", "内容与详情"]) header.append(element("th", "", title));
+    head.append(header); table.append(head);
+    const body = element("tbody");
+    const delivery = { none: "无需发送", pending: "等待发送", sent: "已发送", failed: "发送失败", sending: "发送中" };
+    for (const item of items) {
+      const row = element("tr");
+      row.append(element("td", "time-cell", formatTime(item.created)));
+      const identity = element("td");
+      identity.append(element("span", "", item.kind === "search" ? "网页搜索" : "生图与 GIF"), element("code", "task-id", safeText(item.id, 80)));
+      const status = element("td"); status.append(statusBadge(item.status));
+      const result = element("td");
+      result.append(element("span", "", "完成 " + (item.actual ?? 0) + " / " + (item.requested ?? 0)));
+      if (item.kind === "image") result.append(element("span", "hint", delivery[item.delivery_status] || safeText(item.delivery_status, 40)));
+      const detail = element("td");
+      const prompt = element("p", "prompt-clamp", safeText(item.prompt, 1000) || "未保留内容摘要");
+      detail.append(prompt);
+      const more = element("details", "record-details");
+      more.append(element("summary", "", "展开详情"));
+      const dl = element("dl");
+      appendDetail(dl, "任务 ID", item.id); appendDetail(dl, "更新时间", formatTime(item.updated));
+      appendDetail(dl, "内容", item.prompt);
+      appendError(dl, item.error);
+      more.append(dl); detail.append(more);
+      row.append(identity, status, result, detail); body.append(row);
+    }
+    table.append(body); scroll.append(table); container.append(scroll);
+  }
+  async function loadTasks(offset = state.tasks.offset) {
+    if (!state.bridge) return;
+    const page = state.tasks, sequence = ++page.sequence;
+    pageControls("tasks", true);
+    $("refresh-tasks").disabled = true;
+    $("task-list").setAttribute("aria-busy", "true");
+    $("tasks-status").textContent = "正在读取任务…";
+    try {
+      const result = await request("POST", "tasks/query", { offset, limit: page.limit, kind: $("task-kind").value, status: $("task-status").value });
+      if (sequence !== page.sequence) return;
+      if (!Array.isArray(result?.items) || !Number.isInteger(result.total)) throw new Error("invalid_tasks");
+      page.offset = result.offset; page.total = result.total;
+      if (page.offset >= page.total && page.offset > 0) { loadTasks(0); return; }
+      renderTasks(result.items);
+      if (result.summary) { state.summary = result.summary; renderReadiness(); }
+      $("tasks-status").textContent = "已更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    } catch {
+      if (sequence === page.sequence) $("tasks-status").textContent = "任务读取失败，保留上次列表。请点击刷新任务重试。";
+    } finally {
+      if (sequence === page.sequence) {
+        pageControls("tasks"); $("refresh-tasks").disabled = false;
+        $("task-list").setAttribute("aria-busy", "false");
+      }
+    }
+  }
+  function validPreview(result) {
+    return typeof result?.data_url === "string" && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(result.data_url);
+  }
+  async function openPreview(item, trigger) {
+    const sequence = ++state.previewSequence;
+    const dialog = $("image-preview"), image = $("preview-image");
+    image.hidden = true; image.removeAttribute("src");
+    image.alt = safeText(item.prompt, 240) || "生成图片";
+    $("preview-title").textContent = item.frame_count > 1 ? "GIF 预览" : "图片预览";
+    $("preview-prompt").textContent = safeText(item.prompt, 1000);
+    $("preview-status").textContent = "正在读取图片…";
+    if (!dialog.open) dialog.showModal();
+    dialog.addEventListener("close", () => trigger?.focus(), { once: true });
+    try {
+      const result = await request("POST", "gallery/preview", { task_id: item.task_id, artifact_id: item.artifact_id, thumbnail: false });
+      if (sequence !== state.previewSequence || !dialog.open) return;
+      if (!validPreview(result)) throw new Error("invalid_preview");
+      image.src = result.data_url; image.hidden = false;
+      $("preview-status").textContent = (result.first_frame ? "动态图片首帧预览 · " : "") + safeText(item.task_id, 80);
+    } catch {
+      if (sequence === state.previewSequence) $("preview-status").textContent = "图片读取失败，文件可能已清理。关闭后可刷新图库并重试。";
+    }
+  }
+  function renderGallery(items, sequence) {
+    const container = $("gallery-grid");
+    container.replaceChildren();
+    if (!items.length) {
+      container.append(element("p", "empty-state", "暂无生成图片。生图任务完成并保存结果后，将在这里展示。"));
+      return;
+    }
+    const pending = [];
+    for (const item of items) {
+      const card = element("article", "gallery-card");
+      const thumb = element("button", "gallery-thumb");
+      thumb.type = "button";
+      thumb.disabled = !item.available;
+      thumb.setAttribute("aria-label", "预览图片 " + safeText(item.prompt || item.task_id, 120));
+      thumb.append(element("span", "hint", item.available ? "正在读取预览…" : "文件已清理或不可用"));
+      thumb.addEventListener("click", () => openPreview(item, thumb));
+      const body = element("div", "gallery-body");
+      const meta = element("div", "gallery-meta");
+      meta.append(badge(item.frame_count > 1 ? "GIF · " + item.frame_count + " 帧" : String(item.mime || "图片").replace("image/", "").toUpperCase()), element("span", "meta", (item.width || "—") + " × " + (item.height || "—")));
+      body.append(meta, element("p", "prompt-clamp", safeText(item.prompt, 500) || "未保留提示词"), element("span", "hint", formatTime(item.created)), element("code", "task-id", safeText(item.task_id, 80)));
+      card.append(thumb, body); container.append(card);
+      if (item.available) pending.push({ item, thumb });
+    }
+    // Keep preview reads bounded, and ignore responses for a page the user has left.
+    const worker = async () => {
+      while (pending.length && sequence === state.gallery.sequence && state.currentTab === "gallery") {
+        const { item, thumb } = pending.shift();
+        try {
+          const result = await request("POST", "gallery/preview", { task_id: item.task_id, artifact_id: item.artifact_id, thumbnail: true });
+          if (sequence !== state.gallery.sequence || !thumb.isConnected) return;
+          if (!validPreview(result)) throw new Error("invalid_preview");
+          const image = element("img"); image.src = result.data_url; image.alt = ""; image.loading = "lazy";
+          thumb.replaceChildren(image);
+        } catch {
+          if (thumb.isConnected) thumb.replaceChildren(element("span", "hint", "预览未加载，点击重试"));
+        }
+      }
+    };
+    Promise.allSettled([worker(), worker(), worker()]);
+  }
+  async function loadGallery(offset = state.gallery.offset) {
+    if (!state.bridge) return;
+    const page = state.gallery, sequence = ++page.sequence;
+    pageControls("gallery", true); $("refresh-gallery").disabled = true;
+    $("gallery-grid").setAttribute("aria-busy", "true");
+    $("gallery-status").textContent = "正在读取图库…";
+    try {
+      const result = await request("POST", "gallery/query", { offset, limit: page.limit });
+      if (sequence !== page.sequence) return;
+      if (!Array.isArray(result?.items) || !Number.isInteger(result.total)) throw new Error("invalid_gallery");
+      page.offset = result.offset; page.total = result.total;
+      if (page.offset >= page.total && page.offset > 0) { loadGallery(0); return; }
+      renderGallery(result.items, sequence);
+      $("gallery-status").textContent = "已读取 " + result.total + " 张图片记录。缩略图仅预览首帧，点击可查看完整结果。";
+    } catch {
+      if (sequence === page.sequence) $("gallery-status").textContent = "图库读取失败，保留上次列表。请点击刷新图库重试。";
+    } finally {
+      if (sequence === page.sequence) {
+        pageControls("gallery"); $("refresh-gallery").disabled = false;
+        $("gallery-grid").setAttribute("aria-busy", "false");
+      }
+    }
   }
   async function request(method, endpoint, body) {
     if (!state.bridge) throw new Error("bridge_missing");
@@ -951,12 +1154,29 @@
       });
     });
     $("settings-form").addEventListener("submit", save);
-    $("refresh-diagnostics").addEventListener("click", refreshDiagnostics);
+    $("refresh-diagnostics").addEventListener("click", () => Promise.allSettled([refreshDiagnostics(), refreshSummary()]));
+    $("refresh-tasks").addEventListener("click", () => loadTasks());
+    for (const id of ["task-kind", "task-status"]) $(id).addEventListener("change", () => loadTasks(0));
+    $("refresh-gallery").addEventListener("click", () => loadGallery());
+    for (const name of ["tasks", "gallery"]) {
+      for (const [suffix, delta] of [["prev", -1], ["next", 1]]) {
+        $(name + "-" + suffix).addEventListener("click", () => {
+          const page = state[name], offset = Math.max(0, page.offset + delta * page.limit);
+          if (name === "tasks") loadTasks(offset); else loadGallery(offset);
+        });
+      }
+    }
+    $("close-preview").addEventListener("click", () => $("image-preview").close());
+    $("image-preview").addEventListener("close", () => {
+      ++state.previewSequence;
+      $("preview-image").removeAttribute("src");
+      $("preview-image").hidden = true;
+    });
     $("reset-capabilities").addEventListener("click", resetCapabilities);
     $("refresh-settings").addEventListener("click", () => loadSettings(true));
     $("retry-load").addEventListener("click", async () => {
       if (!state.bridge) { await connect(); return; }
-      await Promise.allSettled([loadSettings(state.loaded), refreshProviders(), refreshDiagnostics()]);
+      await Promise.allSettled([loadSettings(state.loaded), refreshProviders(), refreshDiagnostics(), refreshSummary()]);
     });
     window.addEventListener("beforeunload", (event) => {
       if (state.loaded && collect().dirty.length) { event.preventDefault(); event.returnValue = ""; }
@@ -983,7 +1203,7 @@
       } finally { clearTimeout(timer); }
       state.context = state.bridge.getContext?.() || state.context;
       applyTheme();
-      await Promise.allSettled([loadSettings(state.loaded), refreshProviders(), refreshDiagnostics()]);
+      await Promise.allSettled([loadSettings(state.loaded), refreshProviders(), refreshDiagnostics(), refreshSummary()]);
     } catch {
       $("connection-state").textContent = "宿主连接未就绪";
       showNotice("等待 AstrBot 宿主响应超时，草稿保持不变。请重新连接或从插件页面重新打开。", "error");

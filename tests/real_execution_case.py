@@ -18,7 +18,7 @@ from functools import partial
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import jsonschema
@@ -152,12 +152,12 @@ class Upstream:
                     "usage": {"input_tokens": 11, "output_tokens": 7},
                 },
             )
-        expected_path = "/v1/images/edits" if self.case == "edit" else "/v1/images/generations"
+        expected_path = "/v1/images/edits" if self.case in {"edit", "command_gif"} else "/v1/images/generations"
         assert (
-            self.case in {"generate", "generate_nulls", "generate_legacy", "edit", "gif"}
+            self.case in {"generate", "generate_nulls", "generate_legacy", "edit", "gif", "command_gif"}
             and request.url.path == expected_path
         )
-        data = self.gif if self.case == "gif" else self.png
+        data = self.gif if self.case in {"gif", "command_gif"} else self.png
         return httpx.Response(
             200,
             json={
@@ -338,6 +338,74 @@ async def check_image(plugin, event, upstream, data_dir, case):
         assert body["size"] == ("1024x1024" if case == "generate_legacy" else "auto")
 
 
+async def check_gif_command(plugin, upstream, data_dir):
+    from astrbot.core.pipeline.process_stage.method.star_request import StarRequestSubStage
+    from astrbot.core.pipeline.process_stage.stage import ProcessStage
+    from astrbot.core.pipeline.scheduler import PipelineScheduler
+    from astrbot.core.star.star import star_map
+    from astrbot.core.star.star_handler import EventType, star_handlers_registry
+
+    reference = data_dir / "reference.gif"
+    reference.write_bytes(upstream.gif)
+    event = FakeEvent(
+        "command_gif",
+        components=[Image.fromFileSystem(str(reference))],
+        text="/生动图 将图片中的鞭子动起来 --帧数 2 --帧时长 30",
+    )
+    event.trace = SimpleNamespace(record=Mock())
+    handler = copy(next(
+        item for item in star_handlers_registry.get_handlers_by_event_type(EventType.AdapterMessageEvent)
+        if item.handler_module_path == bridge.__name__ and item.handler_name == "gif_command"
+    ))
+    handler.handler = partial(plugin.gif_command)
+    metadata = SimpleNamespace(name="openai_native", display_name="OpenAI 原生能力")
+    previous = star_map.get(handler.handler_module_path)
+    star_map[handler.handler_module_path] = metadata
+    event.set_extra("activated_handlers", [handler])
+    acknowledgements = []
+
+    async def respond(event):
+        result = event.get_result()
+        if result and result.chain:
+            acknowledgements.append(result.get_plain_text())
+            event._has_send_oper = True
+            event.clear_result()
+
+    process = ProcessStage()
+    process.ctx = SimpleNamespace(astrbot_config={"provider_settings": {"enable": True}})
+    process.star_request_sub_stage = StarRequestSubStage()
+    process.agent_sub_stage = SimpleNamespace(process=Mock(side_effect=AssertionError("Unexpected LLM call")))
+    scheduler = PipelineScheduler.__new__(PipelineScheduler)
+    scheduler.stages = [process, SimpleNamespace(process=respond)]
+    try:
+        await scheduler._process_stages(event)
+    finally:
+        if previous is None:
+            star_map.pop(handler.handler_module_path, None)
+        else:
+            star_map[handler.handler_module_path] = previous
+    assert event.is_stopped()
+    assert len(acknowledgements) == 1 and acknowledgements[0].startswith("已接受动图任务，"), acknowledgements
+    records = event.trace.record.call_args_list
+    assert [call.args[0] for call in records] == ["handler_start", "handler_end"]
+    assert records[-1].kwargs["status"] == "success"
+    task_id = acknowledgements[0].split("，", 1)[1]
+    await asyncio.wait_for(plugin.service.queue.join(), 10)
+    task = await plugin.service.get_task(event, task_id)
+    assert task["status"] == "succeeded" and task["reference_count"] == 1, task
+    assert task["delivery_status"] == "sent" and task["held"] == 0, task
+    assert len(event.delivered_files) == 1 and event.delivered_files[0][1] == upstream.gif
+    assert reference.read_bytes() == upstream.gif
+    request = upstream.requests[0]
+    envelope = BytesParser(policy=default).parsebytes(
+        b"Content-Type: " + request.headers["content-type"].encode("ascii") + b"\r\n\r\n" + request.content
+    )
+    image = next(part for part in envelope.iter_parts() if part.get_filename())
+    assert image.get_content_type() == "image/png"
+    with PillowImage.open(BytesIO(image.get_payload(decode=True))) as first_frame:
+        assert first_frame.n_frames == 1 and first_frame.getpixel((0, 0)) == (0, 0, 255, 255)
+
+
 async def check_persona_permissions(plugin, upstream):
     event = FakeEvent("persona")
     persona = plugin.context.persona_manager.personas_v3[0]
@@ -437,7 +505,9 @@ async def run(case, data_dir):
                 else connection
             )
         )
-        if case == "persona_permissions":
+        if case == "command_gif":
+            await check_gif_command(plugin, upstream, data_dir)
+        elif case == "persona_permissions":
             await check_persona_permissions(plugin, upstream)
         elif case == "search":
             await check_search(plugin, FakeEvent(case, text="请搜索 AstrBot executor"), upstream)
