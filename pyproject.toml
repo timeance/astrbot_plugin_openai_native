@@ -1,6 +1,6 @@
 [project]
 name = "astrbot-plugin-openai-native"
-version = "0.1.3"
+version = "0.1.4"
 requires-python = ">=3.12"
 dependencies = ["httpx>=0.28,<1", "aiosqlite>=0.20,<1", "Pillow>=10.4", "tzdata>=2024.1"]
 [dependency-groups]

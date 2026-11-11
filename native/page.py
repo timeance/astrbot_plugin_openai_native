@@ -4,21 +4,29 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import inspect
+import io
 import ipaddress
 import json
 import math
 import re
 import secrets
+import warnings
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from PIL import Image
+
+from .assets import MIME
 from .config import DEFAULTS, Settings
+from .diagnostics import safe_error
 from .models import NativeError
+from .store import ACTIVE, TERMINAL
 
 _ENV = re.compile(r"(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|env:[A-Za-z_][A-Za-z0-9_]*)\Z")
 _SECRET_NAME = re.compile(r"key|token|secret|password|credential|authorization|cookie", re.I)
@@ -36,6 +44,8 @@ _NUMBERS = {
     "network.connect_timeout",
     "network.download_timeout",
 }
+_PREVIEW_READ_BYTES = 32 * 1024 * 1024
+_PREVIEW_BYTES = 8 * 1024 * 1024
 
 
 class PageError(Exception):
@@ -434,6 +444,151 @@ class PageAPI:
         await self.service.capabilities.clear()
         return {"reset": True}
 
+    @staticmethod
+    def _pagination(payload, *, default_limit, fields=()):
+        if not isinstance(payload, dict) or set(payload) - {"offset", "limit", *fields}:
+            raise PageError("validation", "查询字段无效。")
+        offset, limit = payload.get("offset", 0), payload.get("limit", default_limit)
+        if type(offset) is not int or not 0 <= offset <= 2**63 - 1:
+            raise PageError("validation", "offset 必须是非负整数。")
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise PageError("validation", "limit 必须是 1 到 50 的整数。")
+        return offset, limit
+
+    @staticmethod
+    def _prompt(kind, request):
+        if kind == "search":
+            queries = request.get("queries", [])[:10]
+            return " / ".join(query[:500] for query in queries if isinstance(query, str))[:500]
+        return str(request.get("options", request).get("prompt", ""))[:500]
+
+    async def tasks(self, payload: dict) -> dict:
+        offset, limit = self._pagination(payload, default_limit=20, fields=("kind", "status"))
+        kind, status = payload.get("kind", "all"), payload.get("status", "all")
+        if kind not in ("all", "search", "image") or status not in ("all", *ACTIVE, *TERMINAL):
+            raise PageError("validation", "任务类型或状态无效。")
+        result = await self.service.store.page_tasks(offset, limit, kind, status)
+        for item in result["items"]:
+            item["prompt"] = self._prompt(item["kind"], item.pop("request"))
+            error = item.pop("error")
+            if error:
+                # Saved errors may predate connection-aware redaction. Never return their raw message.
+                details = {"category": "task_error", "message": "任务未完成，详细错误已隐藏。"}
+                category = error.get("category")
+                if isinstance(category, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", category):
+                    details["category"] = category
+                if type(error.get("status_code")) is int and 100 <= error["status_code"] <= 599:
+                    details["status_code"] = error["status_code"]
+                if type(error.get("ambiguous")) is bool:
+                    details["ambiguous"] = error["ambiguous"]
+                item["error"] = safe_error(details)
+        return result
+
+    def _artifact_path(self, artifact):
+        try:
+            root = self.service.assets.root / "artifacts"
+            path = Path(artifact["path"])
+            if not path.is_absolute() or ".." in path.parts or root.resolve(strict=True) != root:
+                raise ValueError
+            path = path.resolve(strict=True)
+            if not path.is_relative_to(root) or not path.is_file():
+                raise ValueError
+            return path
+        except (KeyError, TypeError, ValueError, OSError, RuntimeError):
+            raise PageError("artifact_unavailable", "图片文件不存在或不可访问。", 404) from None
+
+    async def gallery(self, payload: dict) -> dict:
+        offset, limit = self._pagination(payload, default_limit=12)
+        result = await self.service.store.page_gallery(offset, limit)
+
+        def public_items():
+            items = []
+            for row in result["items"]:
+                artifact = row["artifact"]
+                try:
+                    self._artifact_path(artifact)
+                    available = True
+                except PageError:
+                    available = False
+                items.append({
+                    "task_id": row["task_id"],
+                    "artifact_id": artifact["artifact_id"],
+                    "prompt": self._prompt("image", row["request"]),
+                    "created": row["created"],
+                    "mime": artifact["mime"],
+                    "width": artifact["width"],
+                    "height": artifact["height"],
+                    "frame_count": artifact.get("frame_count", 1),
+                    "available": available,
+                })
+            return items
+
+        result["items"] = await asyncio.to_thread(public_items)
+        return result
+
+    def _preview(self, artifact, thumbnail):
+        path = self._artifact_path(artifact)
+        read_limit = min(_PREVIEW_READ_BYTES, self._active["storage"]["max_output_bytes"])
+        try:
+            if path.stat().st_size > read_limit:
+                raise PageError("preview_too_large", "图片超出预览读取大小限制。", 413)
+            with path.open("rb") as stream:
+                data = stream.read(read_limit + 1)
+            if len(data) > read_limit:
+                raise PageError("preview_too_large", "图片超出预览读取大小限制。", 413)
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(data)) as image:
+                    mime = MIME.get(image.format)
+                    frames = getattr(image, "n_frames", 1)
+                    pixels = image.width * image.height
+                    if not mime or pixels > 16777216 or frames * pixels > 67108864:
+                        raise PageError("preview_too_large", "图片超出预览像素限制。", 413)
+                    if not thumbnail and mime == "image/gif" and len(data) <= _PREVIEW_BYTES:
+                        self.service.assets.inspect(data)
+                        return {
+                            "data_url": "data:" + mime + ";base64," + base64.b64encode(data).decode(),
+                            "mime": mime,
+                            "first_frame": False,
+                        }
+                    image.seek(0)
+                    image.load()
+                    image = image.convert("RGBA")
+                    side = 320 if thumbnail else 1280
+                    image.thumbnail((side, side), Image.Resampling.LANCZOS)
+                    output = io.BytesIO()
+                    image.save(output, format="PNG")
+                    data = output.getvalue()
+            if len(data) > _PREVIEW_BYTES:
+                raise PageError("preview_too_large", "图片超出预览响应大小限制。", 413)
+            return {
+                "data_url": "data:" + "image/png;base64," + base64.b64encode(data).decode(),
+                "mime": "image/png",
+                "first_frame": frames > 1,
+            }
+        except PageError:
+            raise
+        except OSError:
+            raise PageError("artifact_unavailable", "图片文件不存在或不可访问。", 404) from None
+        except Exception:
+            raise PageError("invalid_image", "图片无法解码。") from None
+
+    async def preview(self, payload: dict) -> dict:
+        if not isinstance(payload, dict) or set(payload) - {"task_id", "artifact_id", "thumbnail"}:
+            raise PageError("validation", "预览字段无效。")
+        for field in ("task_id", "artifact_id"):
+            if not isinstance(payload.get(field), str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{1,200}", payload[field]
+            ):
+                raise PageError("validation", "需要有效的任务和图片 ID。")
+        thumbnail = payload.get("thumbnail", True)
+        if type(thumbnail) is not bool:
+            raise PageError("validation", "thumbnail 必须是布尔值。")
+        artifact = await self.service.store.page_artifact(payload["task_id"], payload["artifact_id"])
+        if artifact is None:
+            raise PageError("artifact_unavailable", "图片文件不存在或不可访问。", 404)
+        return await asyncio.to_thread(self._preview, artifact, thumbnail)
+
     def _protected(self, operation: str):
         async def handler():
             headers = {"Cache-Control": "no-store"}
@@ -452,11 +607,14 @@ class PageAPI:
                         payload = await read_json()
                     except Exception:
                         raise PageError("validation", "请求必须包含有效 JSON 对象。") from None
-                    result = (
-                        await self.apply_patch(payload)
-                        if operation == "save"
-                        else await self.reset_capabilities(payload)
-                    )
+                    actions = {
+                        "save": self.apply_patch,
+                        "reset": self.reset_capabilities,
+                        "tasks": self.tasks,
+                        "gallery": self.gallery,
+                        "preview": self.preview,
+                    }
+                    result = await actions[operation](payload)
             except PageError as exc:
                 return _http_response(
                     {"status": "error", "message": exc.message, "code": exc.code},
@@ -489,6 +647,9 @@ class PageAPI:
             ("providers", "GET", "providers"),
             ("diagnostics", "GET", "diagnostics"),
             ("capabilities/reset", "POST", "reset"),
+            ("tasks/query", "POST", "tasks"),
+            ("gallery/query", "POST", "gallery"),
+            ("gallery/preview", "POST", "preview"),
         )
         for suffix, method, operation in routes:
             handler = self._protected(operation)

@@ -156,7 +156,7 @@ class OpenAINativePlugin(Star):
         try:
             await self.service.remember_images(event)
         except NativeError:
-            # Invalid/animated input must not stop ordinary chatting.
+            # Invalid input must not stop ordinary chatting.
             pass
 
     def _check_command_conflicts(self):
@@ -450,7 +450,6 @@ class OpenAINativePlugin(Star):
         return f"{exc.message}\n{suffix}".strip()
 
     async def _submit_command(self, event, text, *, animated=False):
-        event.stop_event()
         try:
             quoted_text = await quoted_prompt_from_event(event)
             request = parse_image_command(text, animated=animated, quoted_text=quoted_text)
@@ -467,16 +466,18 @@ class OpenAINativePlugin(Star):
 
     @filter.command("生图")
     async def image_command(self, event: AstrMessageEvent):
+        # Resume after delivery so AstrBot can close the handler span before the pipeline stops.
         yield event.plain_result(await self._submit_command(event, self._command_tail(event, "生图")))
+        event.stop_event()
 
     @filter.command("生动图")
     async def gif_command(self, event: AstrMessageEvent):
         yield event.plain_result(
             await self._submit_command(event, self._command_tail(event, "生动图"), animated=True)
         )
+        event.stop_event()
 
     async def _task_command(self, event, task_id):
-        event.stop_event()
         if not task_id.strip():
             rows = await self.service.list_image_tasks(event)
             if not rows:
@@ -521,15 +522,14 @@ class OpenAINativePlugin(Star):
 
     @filter.command("生图任务")
     async def task_command(self, event: AstrMessageEvent):
-        event.stop_event()
         try:
             result = await self._task_command(event, self._command_tail(event, "生图任务"))
         except NativeError as exc:
             result = self._friendly_error(exc)
         yield event.plain_result(result)
+        event.stop_event()
 
     async def _cancel_command(self, event, task_id):
-        event.stop_event()
         if not task_id.strip():
             raise NativeError("invalid_request", "用法：/生图取消 <任务ID>")
         result = await self.service.public_api.cancel_task(event, task_id.strip())
@@ -539,16 +539,15 @@ class OpenAINativePlugin(Star):
 
     @filter.command("生图取消")
     async def cancel_command(self, event: AstrMessageEvent):
-        event.stop_event()
         try:
             result = await self._cancel_command(event, self._command_tail(event, "生图取消"))
         except NativeError as exc:
             result = self._friendly_error(exc)
         yield event.plain_result(result)
+        event.stop_event()
 
     @filter.command("onative")
     async def command(self, event: AstrMessageEvent):
-        event.stop_event()
         args = self._command_tail(event, "onative")
         parts = args.split(maxsplit=1)
         operation = parts[0] if parts else "status"
@@ -608,3 +607,5 @@ class OpenAINativePlugin(Star):
         except Exception:
             logger.error("OpenAI Native command failed; exception details suppressed")
             yield event.plain_result("操作失败，请查看任务状态；请勿重复提交可能已执行的生成请求。")
+        finally:
+            event.stop_event()

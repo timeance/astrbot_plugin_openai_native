@@ -538,13 +538,16 @@ async def test_fixed_commands_stop_agent_and_share_submission(plugin):
     ):
         event = Event(text=text)
         plugin.service.submit_image.reset_mock()
-        replies = [item async for item in getattr(plugin, method)(event)]
+        handler = getattr(plugin, method)(event)
+        reply = await anext(handler)
+        assert not getattr(event, "stopped", False)
+        assert [item async for item in handler] == []
         assert event.stopped
         plugin.service.submit_image.assert_awaited_once()
         request = plugin.service.submit_image.call_args.args[1]
         assert (request.output_format == "gif") == animated
         assert plugin.service.submit_image.call_args.kwargs == {"deliver": True}
-        assert replies[0] == f"已接受{'动图' if animated else '生图'}任务，id"
+        assert reply == f"已接受{'动图' if animated else '生图'}任务，id"
 
 
 async def test_command_acceptance_template_and_task_details(plugin):

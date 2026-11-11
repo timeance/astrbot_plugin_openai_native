@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <title>OpenAI 原生能力 · 配置与诊断</title>
+  <title>OpenAI 原生能力 · 控制台</title>
   <link rel="stylesheet" href="./app.css">
   <script src="./app.js" defer></script>
 </head>
@@ -15,7 +15,7 @@
       <div class="heading">
         <p class="eyebrow">OPENAI NATIVE</p>
         <h1>原生能力</h1>
-        <p class="subtitle">分别配置网页搜索、图片生成与 GIF，查看实际调用状态。</p>
+        <p class="subtitle">搜索与生图，分别配置，统一查看任务和结果。</p>
       </div>
       <div class="header-controls">
         <span id="connection-state" class="badge">连接宿主中</span>
@@ -29,12 +29,13 @@
       </div>
     </header>
 
-    <nav class="tabs" role="tablist" aria-label="配置分区">
+    <nav class="tabs" role="tablist" aria-label="插件控制台">
       <button type="button" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" data-tab="overview">概览</button>
-      <button type="button" role="tab" id="tab-search" aria-controls="panel-search" aria-selected="false" tabindex="-1" data-tab="search">网页搜索</button>
-      <button type="button" role="tab" id="tab-image" aria-controls="panel-image" aria-selected="false" tabindex="-1" data-tab="image">生图与 GIF</button>
-      <button type="button" role="tab" id="tab-limits" aria-controls="panel-limits" aria-selected="false" tabindex="-1" data-tab="limits">额度与任务</button>
-      <button type="button" role="tab" id="tab-advanced" aria-controls="panel-advanced" aria-selected="false" tabindex="-1" data-tab="advanced">高级设置</button>
+      <button type="button" role="tab" id="tab-tasks" aria-controls="panel-tasks" aria-selected="false" tabindex="-1" data-tab="tasks">任务</button>
+      <button type="button" role="tab" id="tab-gallery" aria-controls="panel-gallery" aria-selected="false" tabindex="-1" data-tab="gallery">图库</button>
+      <button type="button" role="tab" id="tab-search" aria-controls="panel-search" aria-selected="false" tabindex="-1" data-tab="search">搜索设置</button>
+      <button type="button" role="tab" id="tab-image" aria-controls="panel-image" aria-selected="false" tabindex="-1" data-tab="image">生图设置</button>
+      <button type="button" role="tab" id="tab-advanced" aria-controls="panel-advanced" aria-selected="false" tabindex="-1" data-tab="advanced">通用设置</button>
     </nav>
 
     <main>
@@ -50,11 +51,14 @@
           <legend class="sr-only">插件配置与诊断</legend>
           <section id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview">
             <div class="section-heading">
-              <div><h2>运行概况</h2><p>依据运行配置与已有记录判断；刷新不会调用付费模型，也不会覆盖草稿。</p></div>
-              <button type="button" class="button" id="refresh-diagnostics">刷新诊断</button>
+              <div><h2>概览</h2><p>搜索与生图独立运行。统计范围为仍保留的任务记录。</p></div>
+              <button type="button" class="button" id="refresh-diagnostics">刷新概览</button>
             </div>
             <div id="diagnostic-status" class="inline-status" role="status">正在读取运行状态…</div>
             <div id="readiness-grid" class="readiness-grid"></div>
+            <p id="summary-status" class="inline-status" role="status">正在读取任务统计…</p>
+            <details class="overview-details">
+              <summary>配置状态、调用诊断与检查命令</summary>
             <section class="surface">
               <div class="section-heading compact"><div><h3>配置与生效</h3><p id="runtime-state">尚未读取配置。</p></div><span id="revision-label" class="meta"></span></div>
               <div id="runtime-diff"></div>
@@ -69,31 +73,45 @@
               <div id="test-commands" class="command-list"></div>
               <div class="reset-row"><div><strong>清除旧能力记录</strong><p class="hint">只重置能力判断；不会发起搜索、生图或付费探测。重置后需重新验证。</p></div><button type="button" class="button" id="reset-capabilities">重置能力记录</button></div>
             </section>
+            </details>
+          </section>
+
+          <section id="panel-tasks" class="tab-panel" role="tabpanel" aria-labelledby="tab-tasks" hidden>
+            <div class="section-heading"><div><h2>任务</h2><p>查看命令和自然语言触发的搜索、生图任务，以及生成和发送状态。</p></div><button type="button" class="button" id="refresh-tasks">刷新任务</button></div>
+            <div class="filter-bar">
+              <label for="task-kind">功能<select id="task-kind"><option value="all">全部功能</option><option value="search">网页搜索</option><option value="image">生图与 GIF</option></select></label>
+              <label for="task-status">状态<select id="task-status"><option value="all">全部状态</option><option value="queued">已排队</option><option value="running">执行中</option><option value="receiving">接收结果中</option><option value="succeeded">成功</option><option value="partial">部分完成</option><option value="failed">失败</option><option value="cancel_requested">取消中</option><option value="cancelled">已取消</option><option value="result_unavailable">结果不可用</option><option value="needs_reconciliation">待人工核对</option></select></label>
+            </div>
+            <p id="tasks-status" class="inline-status" role="status">切换到此页后读取任务。</p>
+            <div id="task-list" class="surface empty-state">暂无任务记录。</div>
+            <div class="pagination"><button type="button" class="button small" id="tasks-prev" disabled>上一页</button><span id="tasks-page" class="meta">第 1 页</span><button type="button" class="button small" id="tasks-next" disabled>下一页</button></div>
+          </section>
+
+          <section id="panel-gallery" class="tab-panel" role="tabpanel" aria-labelledby="tab-gallery" hidden>
+            <div class="section-heading"><div><h2>图库</h2><p>已生成的图片与 GIF。点击查看大图，文件可用时间由生图设置中的保留期限决定。</p></div><button type="button" class="button" id="refresh-gallery">刷新图库</button></div>
+            <p id="gallery-status" class="inline-status" role="status">切换到此页后读取图库。</p>
+            <div id="gallery-grid" class="gallery-grid"></div>
+            <div class="pagination"><button type="button" class="button small" id="gallery-prev" disabled>上一页</button><span id="gallery-page" class="meta">第 1 页</span><button type="button" class="button small" id="gallery-next" disabled>下一页</button></div>
           </section>
 
           <section id="panel-search" class="tab-panel" role="tabpanel" aria-labelledby="tab-search" hidden>
-            <div class="section-heading"><div><h2>网页搜索</h2><p>独立选择搜索连接；请求提交时固定供应商，不跟随聊天 fallback。</p></div></div>
+            <div class="section-heading"><div><h2>搜索设置</h2><p>连接、触发、结果长度和每日额度。命令与自然语言调用共用额度。</p></div></div>
             <div id="search-fields"></div>
           </section>
 
           <section id="panel-image" class="tab-panel" role="tabpanel" aria-labelledby="tab-image" hidden>
-            <div class="section-heading"><div><h2>生图与 GIF</h2><p>图片模型需明确配置。原生 GIF 还取决于接口、渠道与账号能力。</p></div></div>
+            <div class="section-heading"><div><h2>生图设置</h2><p>图片与 GIF 的连接、输出、每日额度和保存期限。动态参考图取首帧后重新生成。</p></div></div>
             <div id="image-model-warning" class="notice warning">图片模型未配置：生图尚未就绪，仍可保存其他设置。</div>
             <div id="image-fields"></div>
           </section>
 
-          <section id="panel-limits" class="tab-panel" role="tabpanel" aria-labelledby="tab-limits" hidden>
-            <div class="section-heading"><div><h2>额度与任务</h2><p>设置每日额度、请求频率、排队与保存期限。</p></div></div>
-            <div id="limits-fields"></div>
-          </section>
-
           <section id="panel-advanced" class="tab-panel" role="tabpanel" aria-labelledby="tab-advanced" hidden>
-            <div class="section-heading"><div><h2>高级设置</h2><p>按功能调整连接参数。供应商模式继承其地址与凭据，手动 API 在对应功能分区配置。</p></div></div>
+            <div class="section-heading"><div><h2>通用设置</h2><p>搜索和生图共用的额度规则、请求间隔与下载网络设置。</p></div></div>
             <div id="advanced-fields"></div>
           </section>
         </fieldset>
 
-        <footer class="save-bar">
+        <footer id="save-bar" class="save-bar" hidden>
           <div><strong id="draft-state" aria-live="polite">配置未加载</strong><p id="save-hint">保存后请在 AstrBot 插件管理中手动重载。</p></div>
           <button type="submit" class="button primary" id="save" disabled>保存配置</button>
         </footer>
@@ -101,5 +119,11 @@
       <noscript><p class="notice error">请启用 JavaScript 后使用此页面。</p></noscript>
     </main>
   </div>
+  <dialog id="image-preview" aria-labelledby="preview-title" aria-describedby="preview-status">
+    <div class="section-heading compact"><h2 id="preview-title">图片预览</h2><button type="button" class="button small" id="close-preview" autofocus>关闭</button></div>
+    <p id="preview-status" class="inline-status" role="status">正在读取图片…</p>
+    <img id="preview-image" alt="" hidden>
+    <p id="preview-prompt" class="preview-prompt"></p>
+  </dialog>
 </body>
 </html>
