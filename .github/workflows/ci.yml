@@ -81,7 +81,7 @@ jobs:
           framework = root / ("AstrBot-" + os.environ["ASTRBOT_COMMIT"])
           needed = {
               "aiofiles", "aiohttp", "aiosqlite", "anthropic", "apscheduler", "certifi", "click",
-              "cryptography", "dashscope", "deprecated", "docstring-parser", "google-genai", "httpx", "jieba",
+              "cryptography", "dashscope", "deprecated", "docstring-parser", "fastapi", "google-genai", "httpx", "jieba",
               "loguru", "mcp", "openai", "opentelemetry-api", "opentelemetry-sdk", "packaging",
               "pillow", "psutil", "pydantic", "pypdf", "python-ripgrep", "python-socks", "sqlalchemy", "sqlmodel",
               "tenacity", "watchfiles", "websockets",
@@ -91,9 +91,10 @@ jobs:
           selected = [req for req in requirements if re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].lower() in needed]
           (root / "framework-import-requirements.txt").write_text("\n".join(selected) + "\n")
           PY
+          # PipelineScheduler also imports the WeCom adapter and its webhook server.
           python -m pip install -r requirements.txt \
             -r .framework-validation/framework-import-requirements.txt \
-            rich PyYAML pytest pytest-asyncio
+            hypercorn pycryptodome rich PyYAML pytest pytest-asyncio
           python -m pip check
       - name: Real framework registration and tool execution with simulated upstream
         working-directory: .framework-validation/runtime
