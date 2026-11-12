@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zipfile import ZipFile
 
 import pytest
 from test_service import make_service
@@ -218,3 +219,35 @@ async def test_service_hot_logging_records_requests_and_known_secret_redaction(t
         assert "secret-not-for-storage" not in json.dumps(rows)
     finally:
         await service.close()
+
+
+def test_export_archive_contains_all_rotated_logs_after_restart_and_disable(tmp_path):
+    diagnostics = Diagnostics(directory=tmp_path)
+    diagnostics.configure(enabled=True, max_bytes=8000)
+    for sequence in range(30):
+        diagnostics.add(kind="task", sequence=sequence, error={"message": "x" * 600})
+    before = {path.name: path.read_bytes() for path in tmp_path.glob("diagnostics*.jsonl")}
+    assert len(before) > 1
+    restarted = Diagnostics(directory=tmp_path)
+    with restarted.export_archive() as stream, ZipFile(stream) as archive:
+        assert set(archive.namelist()) == {*before, "runtime.json"}
+        for name, data in before.items():
+            assert archive.read(name) == data
+        assert json.loads(archive.read("runtime.json"))["runtime"]["plugin_version"]
+    assert before == {path.name: path.read_bytes() for path in tmp_path.glob("diagnostics*.jsonl")}
+
+
+def test_export_archive_without_logs_reports_missing(tmp_path):
+    diagnostics = Diagnostics(directory=tmp_path)
+    with pytest.raises(FileNotFoundError):
+        diagnostics.export_archive()
+
+
+def test_export_archive_excludes_other_files(tmp_path):
+    diagnostics = Diagnostics(directory=tmp_path)
+    diagnostics.configure(enabled=True, max_bytes=1024 * 1024)
+    diagnostics.add(kind="task", error={"message": "Bearer PRIVATE_TOKEN"})
+    (tmp_path / "unrelated.txt").write_text("PRIVATE_FILE", "utf-8")
+    with diagnostics.export_archive() as stream, ZipFile(stream) as archive:
+        assert set(archive.namelist()) == {"diagnostics.jsonl", "runtime.json"}
+        assert b"PRIVATE_TOKEN" not in archive.read("diagnostics.jsonl")

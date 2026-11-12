@@ -7,12 +7,15 @@ import hashlib
 import json
 import math
 import re
+import shutil
+import tempfile
 import threading
 import time
 import uuid
 from collections import deque
 from copy import deepcopy
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from .capabilities import _redact, _secrets
 
@@ -198,6 +201,37 @@ class Diagnostics:
                 "directory": "data/plugin_data/astrbot_plugin_openai_native/diagnostics",
                 "error": self.disk_error,
             }
+
+    def export_archive(self):
+        """Copy a consistent log snapshot, then compress it without holding the writer lock."""
+        archive = tempfile.TemporaryFile()
+        try:
+            with tempfile.TemporaryDirectory(prefix="openai-native-diagnostics-") as snapshot:
+                copies = []
+                with self._lock:
+                    for path in reversed(self._paths()):
+                        if path.is_symlink():
+                            raise OSError("Diagnostic log must be a regular file")
+                        if not path.exists():
+                            continue
+                        copy = Path(snapshot) / path.name
+                        with path.open("rb") as source, copy.open("wb") as target:
+                            shutil.copyfileobj(source, target, length=64 * 1024)
+                        copies.append(copy)
+                    if not copies:
+                        raise FileNotFoundError("No saved diagnostic logs")
+                    status = self.logging_status()
+                with ZipFile(archive, "w", compression=ZIP_DEFLATED, compresslevel=1) as bundle:
+                    for copy in copies:
+                        bundle.write(copy, copy.name)
+                    bundle.writestr("runtime.json", json.dumps({
+                        "runtime": runtime_info(), "logging": status,
+                    }, ensure_ascii=False, indent=2))
+            archive.seek(0)
+            return archive
+        except BaseException:
+            archive.close()
+            raise
 
     def correlation(self, event):
         getter, setter = getattr(event, "get_extra", None), getattr(event, "set_extra", None)

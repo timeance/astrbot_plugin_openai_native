@@ -37,7 +37,7 @@
 
   const state = {
     bridge: null, context: null, snapshot: null, providers: [], diagnostics: null,
-    loaded: false, loading: false, saving: false, refreshing: false, resetting: false,
+    loaded: false, loading: false, saving: false, refreshing: false, resetting: false, downloading: false,
     conflict: false, currentTab: "overview", theme: "host", summary: null,
     tasks: { offset: 0, limit: 20, total: 0, sequence: 0 },
     gallery: { offset: 0, limit: 12, total: 0, sequence: 0 }, previewSequence: 0
@@ -749,6 +749,10 @@
     const container = $("diagnostic-logging-status");
     container.replaceChildren();
     const logging = state.diagnostics?.logging;
+    $("download-diagnostics").disabled = state.downloading || !logging?.files?.length;
+    if (!state.downloading && logging && !logging.files?.length) {
+      $("diagnostic-download-status").textContent = "暂无已保存日志。开启保存、触发一次调用后刷新概览，即可下载。";
+    }
     if (!logging) {
       container.textContent = "尚未读取日志保存状态，请刷新诊断。";
       return;
@@ -765,6 +769,24 @@
     appendDetail(dl, "已注册命令", (state.diagnostics?.registered_commands || []).map((item) => item.command + " · " + item.handler));
     appendDetail(dl, "保存异常", logging.error);
     container.append(dl);
+  }
+  async function downloadDiagnostics() {
+    if (!state.bridge || state.downloading) return;
+    state.downloading = true;
+    const button = $("download-diagnostics"), status = $("diagnostic-download-status");
+    button.disabled = true;
+    button.textContent = "正在导出…";
+    status.textContent = "正在打包已保存日志，日志较多时请稍候。";
+    try {
+      await state.bridge.download("openai-native/diagnostics/download", {}, "openai-native-diagnostics.zip");
+      status.textContent = "诊断日志已下载，ZIP 包含当前及轮转日志和运行版本。";
+    } catch {
+      status.textContent = "下载失败，请刷新概览确认已有日志后重试，并检查磁盘空间与日志目录权限。";
+    } finally {
+      state.downloading = false;
+      button.textContent = "下载诊断日志";
+      button.disabled = !state.diagnostics?.logging?.files?.length;
+    }
   }
   function renderRecent() {
     const container = $("recent-records");
@@ -1201,6 +1223,7 @@
     });
     $("settings-form").addEventListener("submit", save);
     $("refresh-diagnostics").addEventListener("click", () => Promise.allSettled([refreshDiagnostics(), refreshSummary()]));
+    $("download-diagnostics").addEventListener("click", downloadDiagnostics);
     $("refresh-tasks").addEventListener("click", () => loadTasks());
     for (const id of ["task-kind", "task-status"]) $(id).addEventListener("change", () => loadTasks(0));
     $("refresh-gallery").addEventListener("click", () => loadGallery());

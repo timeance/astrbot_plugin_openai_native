@@ -294,6 +294,7 @@ class PageAPI:
         self._active = deepcopy(active_settings.data)
         self._revision_key = secrets.token_bytes(32)
         self._lock = asyncio.Lock()
+        self._export_lock = asyncio.Lock()
         schema = json.loads((Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text("utf-8"))
         self._fields = {
             f"{section}.{key}": {
@@ -441,6 +442,32 @@ class PageAPI:
 
     async def diagnostics(self) -> dict:
         return await self.service.diagnostics_snapshot()
+
+    async def download_diagnostics(self, headers):
+        from astrbot.api.web import stream_response
+
+        try:
+            async with self._export_lock:
+                archive = await asyncio.to_thread(self.service.diagnostics.export_archive)
+        except FileNotFoundError:
+            raise PageError("logs_unavailable", "暂无已保存的诊断日志，请开启保存并触发一次调用。", 404) from None
+        except OSError:
+            raise PageError("logs_unavailable", "诊断日志导出失败，请检查磁盘空间与日志目录权限后重试。", 503) from None
+
+        async def chunks():
+            try:
+                while chunk := await asyncio.to_thread(archive.read, 64 * 1024):
+                    yield chunk
+            finally:
+                archive.close()
+
+        try:
+            return stream_response(chunks(), content_type="application/zip", headers={
+                **headers, "Content-Disposition": 'attachment; filename="openai-native-diagnostics.zip"',
+            })
+        except BaseException:
+            archive.close()
+            raise
 
     async def reset_capabilities(self, payload: dict) -> dict:
         if not isinstance(payload, dict) or payload:
@@ -606,6 +633,8 @@ class PageAPI:
                     result = await self.providers()
                 elif operation == "diagnostics":
                     result = await self.diagnostics()
+                elif operation == "download_diagnostics":
+                    return await self.download_diagnostics(headers)
                 else:
                     try:
                         payload = await read_json()
@@ -650,6 +679,7 @@ class PageAPI:
             ("settings", "POST", "save"),
             ("providers", "GET", "providers"),
             ("diagnostics", "GET", "diagnostics"),
+            ("diagnostics/download", "GET", "download_diagnostics"),
             ("capabilities/reset", "POST", "reset"),
             ("tasks/query", "POST", "tasks"),
             ("gallery/query", "POST", "gallery"),

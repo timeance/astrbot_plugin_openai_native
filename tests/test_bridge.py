@@ -17,7 +17,15 @@ import pytest
 from native.config import Settings
 from native.diagnostics import Diagnostics
 from native.identity import actor_from_event
-from native.models import Artifact, NativeError, SearchHit, SearchResult
+from native.models import (
+    Artifact,
+    ImageBatch,
+    ImageRequest,
+    NativeError,
+    RemoteImage,
+    SearchHit,
+    SearchResult,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -249,6 +257,102 @@ async def test_image_submits_background_and_accepts_asset_ids_only(plugin):
         result = await plugin.image(event, "a dog", references=[reference])
         assert '"error"' in result
     plugin.service.submit_image.assert_not_called()
+
+
+@pytest.mark.parametrize("entry", ["command", "tool"])
+@pytest.mark.parametrize("history_edit", [False, True])
+async def test_image_entry_points_only_use_history_for_explicit_edits(
+    plugin, tmp_path, png_data, entry, history_edit
+):
+    from test_service import make_service
+
+    service = await make_service(tmp_path)
+    plugin.service, plugin.settings = service, service.settings
+    service.image_adapter.generate = AsyncMock(return_value=ImageBatch([RemoteImage(data=png_data)]))
+    prompt = "参考上一张图，画一只蓝色美西螈" if history_edit else "画一只蓝色美西螈"
+    event = Event(text=("/生图 " if entry == "command" else "") + prompt)
+    try:
+        await service.assets.import_data(actor_from_event(event), png_data)
+        if entry == "command":
+            replies = [reply async for reply in plugin.image_command(event)]
+            assert len(replies) == 1 and replies[0].startswith("已接受生图任务，")
+        else:
+            # The model selects edit for an explicit historical reference, per the tool contract.
+            result = json.loads(await plugin.image(event, prompt, action="edit" if history_edit else "auto"))
+            assert result["status"] == "queued"
+        await service.queue.join()
+        service.image_adapter.generate.assert_awaited_once()
+        _, request, assets = service.image_adapter.generate.await_args.args
+        assert request.action == ("edit" if history_edit else "generate")
+        assert len(assets) == int(history_edit)
+        assert all(row["used"] == 1 and row["held"] == 0 for row in (await service.quota(event))["image"])
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("entry", ["command", "tool", "public_api"])
+@pytest.mark.parametrize("group", ["group-a", ""])
+@pytest.mark.parametrize("bot_mention", [False, True])
+async def test_qq_avatar_reference_excludes_bot_and_works_through_image_entries(
+    plugin, tmp_path, png_data, entry, group, bot_mention
+):
+    from test_service import make_service
+
+    service = await make_service(tmp_path)
+    plugin.service, plugin.settings = service, service.settings
+    service.image_adapter.generate = AsyncMock(return_value=ImageBatch([RemoteImage(data=png_data)]))
+    service.transport.download = AsyncMock(return_value=png_data)
+    event = Event(group=group, text="/生图 参考用户头像画一只蓝色美西螈")
+    event.unified_msg_origin = "adapter-a:GroupMessage:group-a" if group else "adapter-a:FriendMessage:u1"
+    targets = (["bot-a"] if bot_mention else []) + [542140488, "542140488", "10002"]
+    parts = [type("At", (), {"qq": qq})() for qq in targets]
+    event.get_messages = lambda: parts
+    try:
+        await service.assets.import_data(actor_from_event(event), png_data)
+        await service.remember_images(event)
+        service.transport.download.assert_not_awaited()
+        if entry == "command":
+            replies = [reply async for reply in plugin.image_command(event)]
+            assert len(replies) == 1 and replies[0].startswith("已接受生图任务，")
+        elif entry == "tool":
+            result = json.loads(await plugin.image(event, "Use the mentioned user's avatar", action="edit"))
+            assert result["status"] == "queued"
+        else:
+            result = await service.public_api.submit_image(event, ImageRequest("参考用户头像画一只蓝色美西螈"))
+            assert result.status == "queued"
+        await service.queue.join()
+        assert [call.args[0] for call in service.transport.download.await_args_list] == [
+            "https://q1.qlogo.cn/g?b=qq&nk=542140488&s=640",
+            "https://q1.qlogo.cn/g?b=qq&nk=10002&s=640",
+        ]
+        _, request, assets = service.image_adapter.generate.await_args.args
+        assert request.action == "edit" and len(assets) == 1  # Identical returned avatars are deduplicated.
+        assert all(row["used"] == 1 and row["held"] == 0 for row in (await service.quota(event))["image"])
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("avatar_word", [False, True])
+async def test_bot_mention_alone_never_selects_avatar_or_history(plugin, tmp_path, png_data, avatar_word):
+    from test_service import make_service
+
+    service = await make_service(tmp_path)
+    plugin.service, plugin.settings = service, service.settings
+    service.image_adapter.generate = AsyncMock(return_value=ImageBatch([RemoteImage(data=png_data)]))
+    service.transport.download = AsyncMock(side_effect=AssertionError("Unexpected avatar download"))
+    event = Event(text="/生图 画一只蓝色美西螈" + ("头像" if avatar_word else ""))
+    # A non-bot mention without an avatar request must also stay plain text-to-image.
+    targets = ["bot-a"] if avatar_word else ["bot-a", "542140488"]
+    event.get_messages = lambda: [type("At", (), {"qq": qq})() for qq in targets]
+    try:
+        await service.assets.import_data(actor_from_event(event), png_data)
+        assert [reply async for reply in plugin.image_command(event)]
+        await service.queue.join()
+        _, request, assets = service.image_adapter.generate.await_args.args
+        assert request.action == "generate" and assets == []
+        service.transport.download.assert_not_awaited()
+    finally:
+        await service.close()
 
 
 @pytest.mark.parametrize(

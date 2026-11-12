@@ -368,11 +368,12 @@ class OpenAINativePlugin(Star):
         frame_duration_ms: int | None = None,
     ) -> str:
         """创建新图片或原生 GIF、编辑参考图时调用本工具。立即返回任务 ID，完成后后台发送。
+        参考被 @ 用户的头像时保留头像要求并用 auto 或 edit；当前支持 QQ aiocqhttp，排除机器人自身。
 
         Args:
             prompt(string): 画面或编辑说明；GIF 可描述动作和循环。
-            action(string): auto、generate 或 edit；编辑需要参考图片。
-            references(array[string]): 本插件素材 ID；不接受 URL 或本地路径；省略自动读当前或引用图。
+            action(string): 普通文生图用 generate；auto 读取当前附图、明确引用的图片或明确要求的 @用户头像。明确编辑或参考历史图片时用 edit，可读取同用户同会话的近期图片。
+            references(array[string]): 本插件素材 ID；不接受 URL 或本地路径；省略时按 action 选择图片。不要仅因上下文有图片就将普通文生图设为 edit。
             n(int): 生成文件数量。
             output_format(string): png、jpeg、webp 或 gif；GIF 需要管理员启用。
             size(string): 默认 null；也可传 auto 或 WIDTHxHEIGHT（如 1024x1024）。固定尺寸与比例/分辨率互斥。

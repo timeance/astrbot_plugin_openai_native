@@ -36,6 +36,11 @@ _RATIOS = {
     "21:9",
 }
 _RESOLUTIONS = {"1K", "1.5K", "2K", "4K"}
+_HISTORY_REFERENCE = re.compile(
+    r"(?:^|[，,。！？!?\n])\s*(?:请)?"
+    r"(?:(?:参考|根据|使用)\s*(?:上一张|上张|刚才的?)\s*(?:图片|图|照片|截图)"
+    r"|把\s*(?:上一张|上张|刚才的?)\s*(?:图片|图|照片|截图)\s*(?:改|换|变|做))"
+)
 
 
 def _invalid(message: str) -> NativeError:
@@ -213,6 +218,8 @@ def parse_image_command(
     prompt = "".join(parts).strip()
     if not prompt and isinstance(quoted_text, str):
         prompt = quoted_text.strip()
+    if _HISTORY_REFERENCE.search(prompt):
+        options["action"] = "edit"
     preset = options.pop("preset", None)
     if preset:
         prompt = f"[预设:{preset}]" + (f" {prompt}" if prompt else "")
