@@ -53,6 +53,7 @@
   };
   const services = [["auto", "自动识别"], ["openai", "OpenAI"], ["newapi", "NewAPI"], ["sub2api", "Sub2API"], ["unknown", "未知 / 不识别"]];
   const groups = [
+    ["diagnostics", "overview", "诊断日志", "默认关闭。保存后立即生效，按总量上限滚动清理最旧日志；关闭后保留已有文件。不保存聊天正文、图片内容或密钥。"],
     ["search-connection", "search", "搜索连接", "使用当前会话、固定供应商，或独立的手动 API。"],
     ["search-bounds", "search", "触发与查询", "按需搜索由主代理判断是否需要；明确触发仅响应用户明确的搜索请求。"],
     ["search-display", "search", "结果摘要与来源信息", "控制提供给模型的搜索内容；最终回复由模型生成。"],
@@ -154,6 +155,12 @@
   field("network.download_timeout", "下载超时", "number", "network", { min: 0, integer: false, unit: "秒" });
   field("network.download_attempts", "下载尝试次数", "number", "network", { min: 1, unit: "次", hint: "只重试结果下载，不重新生成图片。" });
   field("network.allow_private_download_hosts", "允许下载的私有主机", "list", "network", { hint: "用逗号或换行分隔；默认留空。", wide: true });
+  field("diagnostics.enabled", "保存诊断日志", "boolean", "diagnostics", {
+    hint: "开启后记录命令匹配、工具筛选和任务状态，便于排查未触发原因。"
+  });
+  field("diagnostics.max_mb", "诊断日志总量上限", "number", "diagnostics", {
+    min: 1, max: 10000, unit: "MB", hint: "默认 100 MB，包含当前文件与轮转备份。缩小上限时会清理最旧日志。"
+  });
   const fieldByPath = new Map(fields.map((entry) => [entry.path, entry]));
 
   function controlValue(path) { return controls.get(path)?.input.value || ""; }
@@ -554,7 +561,7 @@
     $("draft-state").textContent = state.saving ? "正在保存…" : count ? "尚未保存 · " + count + " 项变更" : "草稿与已保存配置一致";
     $("save").disabled = !count || state.saving || state.loading || state.conflict;
     $("save").textContent = state.saving ? "正在保存…" : "保存配置";
-    $("save-hint").textContent = result.errors.size ? "存在 " + result.errors.size + " 项输入错误，请修正后保存。" : "保存只持久化；请在 AstrBot 插件管理中手动重载后生效。";
+    $("save-hint").textContent = result.errors.size ? "存在 " + result.errors.size + " 项输入错误，请修正后保存。" : "诊断日志保存后立即生效；其他配置请在插件管理中手动重载。";
     const summary = $("validation-summary");
     if (summary.dataset.revealed === "true") renderValidation(result.errors);
     updateSaveBar(count);
@@ -738,11 +745,32 @@
       ["upstream_code", "error.code"], ["message", "error.message"], ["request_id", "请求 ID"]
     ]) appendDetail(dl, title, error[key]);
   }
+  function renderLogging() {
+    const container = $("diagnostic-logging-status");
+    container.replaceChildren();
+    const logging = state.diagnostics?.logging;
+    if (!logging) {
+      container.textContent = "尚未读取日志保存状态，请刷新诊断。";
+      return;
+    }
+    container.append(badge(logging.error ? "日志保存异常" : logging.enabled ? "正在保存诊断日志" : "日志保存未开启", logging.error ? "bad" : logging.enabled ? "good" : ""));
+    const dl = element("dl");
+    const runtime = state.diagnostics?.runtime || {};
+    appendDetail(dl, "AstrBot 版本", runtime.astrbot_version);
+    appendDetail(dl, "插件版本", runtime.plugin_version);
+    appendDetail(dl, "代码指纹", runtime.bridge_sha256);
+    appendDetail(dl, "已保存 / 上限", (Number(logging.total_bytes || 0) / 1024 / 1024).toFixed(2) + " MB / " + logging.max_mb + " MB");
+    appendDetail(dl, "保存目录", logging.directory);
+    appendDetail(dl, "日志文件", (logging.files || []).map((file) => file.name + " · " + (Number(file.bytes || 0) / 1024 / 1024).toFixed(2) + " MB"));
+    appendDetail(dl, "已注册命令", (state.diagnostics?.registered_commands || []).map((item) => item.command + " · " + item.handler));
+    appendDetail(dl, "保存异常", logging.error);
+    container.append(dl);
+  }
   function renderRecent() {
     const container = $("recent-records");
     container.className = "";
     container.replaceChildren();
-    const records = Array.isArray(state.diagnostics?.recent) ? state.diagnostics.recent.slice(-30).reverse() : [];
+    const records = Array.isArray(state.diagnostics?.recent) ? state.diagnostics.recent.slice(0, 30) : [];
     if (!records.length) {
       container.className = "empty-state";
       container.textContent = "暂无当前运行周期的调用记录；在目标会话调用后刷新。";
@@ -758,7 +786,7 @@
       if (!record || typeof record !== "object") continue;
       const tr = element("tr");
       tr.append(element("td", "", formatTime(record.time)));
-      const stages = { request: "模型请求", hook: "工具筛选", execution: "工具执行", tool_execution: "工具执行", tool: "工具执行", result: "执行结果", readiness: "就绪检查" };
+      const stages = { request: "模型请求", hook: "工具筛选", execution: "工具执行", tool_execution: "工具执行", tool: "工具执行", result: "执行结果", readiness: "就绪检查", message: "消息与命令匹配", reference_cache: "参考图读取", runtime: "运行版本" };
       tr.append(element("td", "", safeText(record.tool || stages[record.kind] || record.kind || "调用记录", 100)));
       const outcome = element("td");
       if (record.state || record.status) outcome.append(statusBadge(record.state || record.status));
@@ -771,6 +799,20 @@
       details.append(element("summary", "", "展开"));
       const dl = element("dl");
       appendDetail(dl, "关联 ID", record.correlation_id);
+      appendDetail(dl, "消息跟踪 ID", record.trace_id);
+      appendDetail(dl, "AstrBot 版本", record.astrbot_version);
+      appendDetail(dl, "插件版本", record.plugin_version);
+      appendDetail(dl, "代码指纹", record.bridge_sha256);
+      appendDetail(dl, "命令前缀", record.command_hint);
+      appendDetail(dl, "分隔符类型", record.command_boundary);
+      appendDetail(dl, "分隔符编码", record.separator_codepoint);
+      appendDetail(dl, "正文长度", record.message_length);
+      if (record.kind === "message") {
+        appendDetail(dl, "唤醒 / 命令条件", record.is_at_or_wake_command ? "已满足" : "未满足");
+        appendDetail(dl, "当前图片数", record.image_count);
+        appendDetail(dl, "包含引用", record.has_reply ? "是" : "否");
+      }
+      appendDetail(dl, "已匹配处理器", record.activated_handlers);
       appendDetail(dl, "进入前工具", record.tools_before);
       appendDetail(dl, "筛选后工具", record.tools_after);
       appendDetail(dl, "执行工具", record.tool);
@@ -996,7 +1038,7 @@
       const result = await request("GET", "diagnostics");
       if (!result || typeof result !== "object" || !result.features) throw new Error("invalid_diagnostics");
       state.diagnostics = result;
-      renderReadiness(); renderRecent(); renderConflicts();
+      renderReadiness(); renderLogging(); renderRecent(); renderConflicts();
       $("diagnostic-status").textContent = "诊断更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false }) + (result.notice ? " · " + safeText(result.notice) : "");
     } catch {
       $("diagnostic-status").textContent = "诊断读取失败；保留上次记录，当前表单草稿不受影响。可再次刷新。";
@@ -1027,7 +1069,7 @@
       $("refresh-settings").hidden = true;
       $("connection-state").textContent = "已连接 AstrBot";
       $("connection-state").className = "badge good";
-      showNotice(preserve ? "已读取最新配置并保留草稿。请核对未保存项，再点击保存；此操作没有提交修改。" : "配置已加载。保存只持久化，请在插件管理中手动重载后生效。", preserve ? "warning" : "");
+      showNotice(preserve ? "已读取最新配置并保留草稿。请核对未保存项，再点击保存；此操作没有提交修改。" : "配置已加载。诊断日志保存后立即生效；其他配置需手动重载。", preserve ? "warning" : "");
     } catch {
       showNotice("配置读取失败，已有草稿保持不变。请检查宿主连接与插件接口后重试。", "error");
       $("retry-load").hidden = false;
@@ -1063,7 +1105,11 @@
       acceptSnapshot(response);
       state.conflict = false;
       $("refresh-settings").hidden = true;
-      showNotice(response.needs_reload ? "配置已保存，尚未应用到运行服务。请在 AstrBot 插件管理中手动重载。" : "配置已保存。当前运行配置与已保存配置一致。", "success");
+      const diagnosticSaved = own(body.patch, "diagnostics");
+      showNotice(response.needs_reload
+        ? "配置已保存。" + (diagnosticSaved ? "诊断日志设置已生效；其他改动" : "改动") + "请在插件管理中手动重载后生效。"
+        : diagnosticSaved ? "诊断日志设置已保存并生效。" : "配置已保存。当前运行配置与已保存配置一致。", "success");
+      if (diagnosticSaved) await refreshDiagnostics();
     } catch (error) {
       state.conflict = isConflict(error) || persisted;
       $("refresh-settings").hidden = false;

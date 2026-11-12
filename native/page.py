@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Authenticated settings endpoints; saved settings remain separate from runtime state."""
+"""Authenticated settings endpoints; only diagnostic logging applies immediately."""
 
 from __future__ import annotations
 
@@ -415,6 +415,10 @@ class PageAPI:
                 self.config.clear()
                 self.config.update(before)
                 raise PageError("save_failed", "配置保存失败，内存配置已恢复。", 500) from None
+            diagnostic = Settings(candidate).data["diagnostics"]
+            if diagnostic != self._active["diagnostics"]:
+                self.service.configure_diagnostics(diagnostic)
+                self._active["diagnostics"] = deepcopy(diagnostic)
             return self.snapshot()
 
     async def providers(self) -> dict:
