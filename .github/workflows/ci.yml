@@ -81,7 +81,7 @@ jobs:
           framework = root / ("AstrBot-" + os.environ["ASTRBOT_COMMIT"])
           needed = {
               "aiofiles", "aiohttp", "aiosqlite", "anthropic", "apscheduler", "certifi", "click",
-              "cryptography", "deprecated", "docstring-parser", "google-genai", "httpx", "jieba",
+              "cryptography", "dashscope", "deprecated", "docstring-parser", "google-genai", "httpx", "jieba",
               "loguru", "mcp", "openai", "opentelemetry-api", "opentelemetry-sdk", "packaging",
               "pillow", "psutil", "pydantic", "pypdf", "python-ripgrep", "python-socks", "sqlalchemy", "sqlmodel",
               "tenacity", "watchfiles", "websockets",
