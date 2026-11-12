@@ -26,6 +26,30 @@ def test_defaults_keep_formats_separate_and_leave_other_options_to_service():
 
 
 @pytest.mark.parametrize(
+    "prompt, action",
+    [
+        ("画一只蓝色美西螈", "auto"),
+        ("不要参考上一张图，画一只蓝色美西螈", "auto"),
+        ('画一个写着“参考上一张图”的牌子', "auto"),
+        ("参考上一张图，画一只蓝色美西螈", "edit"),
+        ("请参考上张图片，换成水彩风格", "edit"),
+        ("把刚才图片改成蓝色美西螈", "edit"),
+        ("画成水彩风格，参考刚才的截图", "edit"),
+    ],
+)
+def test_history_reference_requires_explicit_command_wording(prompt, action):
+    request = parse_image_command(prompt)
+    assert request.action == action and request.prompt == prompt
+
+
+def test_history_reference_keeps_presets_and_animated_options():
+    request = parse_image_command("参考上一张图，眨眼 --预设 QQ表情 --帧数 4", animated=True)
+    assert request.action == "edit" and request.output_format == "gif"
+    assert request.prompt == "[预设:QQ表情] 参考上一张图，眨眼"
+    assert request.frame_count == 4
+
+
+@pytest.mark.parametrize(
     "prompt",
     [
         "3 只柴犬在 2 棵树下",

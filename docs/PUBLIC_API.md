@@ -56,6 +56,8 @@ for artifact in artifacts:
 
 `ImageRequest` 参数：`prompt`、`action`（auto/generate/edit）、`references`、`n`、`output_format`、`size`、`aspect_ratio`、`resolution`、`quality`、`complexity`、`frame_count`、`frame_duration_ms`。省略格式和尺寸使用配置，省略帧参数使用配置；`0` 不代表“省略”。工具只接受素材 ID，公共 API 的参考输入按 AssetStore 支持的素材 ID、图片字节或经校验的路径提供，仍受身份、文件类型和大小规则约束。
 
+`auto` 不回取近期历史图片，使用明确提供的素材、当前附图、引用图片，以及明确要求参考的 QQ @用户头像；普通文生图可明确传 `generate`。仅在确实需要编辑或参考历史图片时传 `edit`，此时才可使用同用户同会话的近期图片；显式引用无图时不会回退到其他历史图片。头像参考需要事件中的真实 @组件和头像要求（提示词或当前消息包含“头像”），当前仅支持 aiocqhttp，排除机器人自身及 @全体成员；不接受用提示词中的数字冒充 @目标。
+
 `TaskHandle` 提供 `task_id`、`status`、`accepted`。`Artifact` 提供 `artifact_id`、本地 `path`、`mime`、`size_bytes`、`sha256`、`width`、`height`、`frame_count` 和可空 `frame_duration_ms`。文件路径只在机器人所在主机有效，并受保存期限约束。
 
 ## 方法一览

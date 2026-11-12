@@ -64,7 +64,11 @@
               <div id="runtime-diff"></div>
             </section>
             <div id="overview-fields"></div>
-            <div id="diagnostic-logging-status" class="surface" role="status" aria-live="polite">正在读取日志保存状态…</div>
+            <section class="surface">
+              <div class="section-heading compact"><h3>日志文件</h3><button type="button" class="button" id="download-diagnostics" disabled>下载诊断日志</button></div>
+              <p id="diagnostic-download-status" class="hint" role="status" aria-live="polite">ZIP 包含当前及轮转日志和运行版本；关闭记录后仍可下载已有日志。</p>
+              <div id="diagnostic-logging-status" role="status" aria-live="polite">正在读取日志保存状态…</div>
+            </section>
             <section class="surface">
               <div class="section-heading compact"><div><h3>最近调用诊断</h3><p>只显示有界记录中的状态与脱敏错误，不展示聊天正文。</p></div></div>
               <div id="recent-records" class="empty-state">尚无诊断记录。</div>

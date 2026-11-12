@@ -16,6 +16,7 @@ from pathlib import Path
 from types import MethodType, ModuleType, SimpleNamespace
 from typing import Generic, TypeVar, overload
 from unittest.mock import AsyncMock, Mock
+from zipfile import ZipFile
 
 import pytest
 from PIL import Image
@@ -24,6 +25,7 @@ import native.page as page
 from native.assets import AssetStore
 from native.capabilities import CapabilityRegistry
 from native.config import DEFAULTS, Settings
+from native.diagnostics import Diagnostics
 from native.models import Actor, Connection, NativeError
 from native.page import PageAPI, PageError
 from native.store import Store
@@ -498,7 +500,7 @@ def actual_host(monkeypatch, setup_page):
     api.context = ctx
     assert api.register() is None
     api.register()  # The real registration contract must replace, never duplicate.
-    assert len(ctx.registered_web_apis) == 16
+    assert len(ctx.registered_web_apis) == 18
     namespace = {
         "contextvars": contextvars,
         "contextmanager": contextmanager,
@@ -521,6 +523,10 @@ def actual_host(monkeypatch, setup_page):
     web.PluginRequest = namespace["PluginRequest"]
     web.request = namespace["PluginRequestProxy"]()
     web.json_response = response
+    web.stream_response = host_definitions(
+        "astrbot/api/web.py", {"stream_response"}, {"StreamingResponse": lambda content, **kwargs:
+            SimpleNamespace(body_iterator=content, **kwargs)},
+    )["stream_response"]
     monkeypatch.setitem(sys.modules, "astrbot", ModuleType("astrbot"))
     monkeypatch.setitem(sys.modules, "astrbot.api", ModuleType("astrbot.api"))
     monkeypatch.setitem(sys.modules, "astrbot.api.web", web)
@@ -577,7 +583,7 @@ async def test_actual_host_registration_dispatches_get_post_and_bridge_alias(act
         )
         assert result.status_code == 200 and result.data["values"]["search"]["model"] == prefix
     assert not inspect.iscoroutinefunction(api.register)
-    assert len(ctx.registered_web_apis) == 16
+    assert len(ctx.registered_web_apis) == 18
 
 
 @pytest.mark.parametrize(
@@ -587,6 +593,7 @@ async def test_actual_host_registration_dispatches_get_post_and_bridge_alias(act
         ("settings", "POST"),
         ("providers", "GET"),
         ("diagnostics", "GET"),
+        ("diagnostics/download", "GET"),
         ("capabilities/reset", "POST"),
         ("tasks/query", "POST"),
         ("gallery/query", "POST"),
@@ -1009,3 +1016,43 @@ async def test_failed_save_does_not_enable_diagnostic_logging(setup_page):
     service.configure_diagnostics.assert_not_called()
     assert api.snapshot()["active_values"]["diagnostics"]["enabled"] is False
     assert "diagnostics" not in config
+
+
+async def test_diagnostic_download_streams_zip_through_both_authenticated_routes(actual_host, tmp_path):
+    api, _, call, _ = actual_host
+    diagnostics = Diagnostics(directory=tmp_path)
+    diagnostics.configure(enabled=True, max_bytes=1024 * 1024)
+    diagnostics.add(kind="tool_execution", prompt="PRIVATE_CHAT", state="completed")
+    diagnostics.configure(enabled=False, max_bytes=1024 * 1024)
+    api.service.diagnostics = diagnostics
+    for prefix in ("openai-native", "astrbot_plugin_openai_native/openai-native"):
+        result, _ = await call(prefix + "/diagnostics/download")
+        assert result.status_code == 200 and result.media_type == "application/zip"
+        assert result.headers["Cache-Control"] == "no-store"
+        assert result.headers["Content-Disposition"].endswith('filename="openai-native-diagnostics.zip"')
+        data = b"".join([chunk async for chunk in result.body_iterator])
+        with ZipFile(io.BytesIO(data)) as archive:
+            assert set(archive.namelist()) == {"diagnostics.jsonl", "runtime.json"}
+            assert json.loads(archive.read("diagnostics.jsonl"))["state"] == "completed"
+            assert "PRIVATE_CHAT" not in archive.read("diagnostics.jsonl").decode()
+
+
+@pytest.mark.parametrize("failure,status", [(FileNotFoundError, 404), (PermissionError, 503)])
+async def test_diagnostic_download_errors_are_safe_and_do_not_look_like_zip(actual_host, failure, status):
+    api, _, call, _ = actual_host
+    api.service.diagnostics = SimpleNamespace(export_archive=Mock(side_effect=failure("PRIVATE_PATH")))
+    result, _ = await call("openai-native/diagnostics/download")
+    assert result.status_code == status and result.data["status"] == "error"
+    assert result.headers["Cache-Control"] == "no-store"
+    assert "Content-Disposition" not in result.headers
+    assert "PRIVATE_PATH" not in json.dumps(result.data)
+
+
+async def test_diagnostic_download_closes_temporary_archive_when_stream_is_cancelled(actual_host):
+    api, _, call, _ = actual_host
+    archive = io.BytesIO(b"x" * 200000)
+    api.service.diagnostics = SimpleNamespace(export_archive=lambda: archive)
+    result, _ = await call("openai-native/diagnostics/download")
+    assert len(await anext(result.body_iterator)) == 64 * 1024
+    await result.body_iterator.aclose()
+    assert archive.closed

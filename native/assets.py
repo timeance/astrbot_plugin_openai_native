@@ -185,6 +185,46 @@ class AssetStore:
                 assets.append(await self.import_data(actor, await self._read_local(value)))
         return assets
 
+    async def _mentioned_avatars(self, event, actor, prompt):
+        text = event.get_message_str() if hasattr(event, "get_message_str") else ""
+        if "头像" not in prompt and "头像" not in text:
+            return []
+        components = event.get_messages() if hasattr(event, "get_messages") else []
+        targets = []
+        for part in components:
+            if type(part).__name__ == "AtAll":
+                raise NativeError("invalid_reference", "头像参考不支持 @全体成员，请 @具体用户。")
+            if type(part).__name__ != "At":
+                continue
+            target = str(getattr(part, "qq", ""))
+            if target == "all":
+                raise NativeError("invalid_reference", "头像参考不支持 @全体成员，请 @具体用户。")
+            if target != str(event.get_self_id()) and target not in targets:
+                targets.append(target)
+        if not targets:
+            return []
+        platform = event.get_platform_name() if hasattr(event, "get_platform_name") else ""
+        if platform != "aiocqhttp":
+            raise NativeError("unsupported", "当前平台暂不支持通过 @ 获取头像，请附图或引用图片。")
+        if any(
+            not (target.isascii() and target.isdigit() and len(target) <= 20 and int(target) > 0)
+            for target in targets
+        ):
+            raise NativeError("invalid_reference", "头像参考需要有效的 QQ 用户 @。")
+        if len(targets) > self.settings.feature("image")["max_references"]:
+            raise NativeError("invalid_request", "Too many reference images")
+        assets = []
+        for target in targets:
+            try:
+                assets.append(
+                    await self.explicit(
+                        actor, f"https://q1.qlogo.cn/g?b=qq&nk={target}&s=640", allow_local_paths=False
+                    )
+                )
+            except (NativeError, OSError) as exc:
+                raise NativeError("invalid_reference", "无法获取所 @ 用户的头像，请附图或引用图片重试。") from exc
+        return assets
+
     async def prepare(self, event, actor, request, *, allow_local_paths=False):
         if request.references:
             assets = [
@@ -195,13 +235,17 @@ class AssetStore:
             assets = []
         else:
             assets = await self.from_event(event, actor)
+        if request.action != "generate":
+            # Avatar downloads are specific to a generation request, never the message cache hook.
+            assets.extend(await self._mentioned_avatars(event, actor, request.prompt))
             # An explicit reply selects that message as the reference source.
             # Do not substitute an unrelated recent image if the quote has no image.
             has_reply = any(
                 type(part).__name__ == "Reply"
                 for part in (event.get_messages() if hasattr(event, "get_messages") else [])
             )
-            if not assets and not has_reply:
+            # Only an explicit edit request may select an unquoted historical image.
+            if not assets and not has_reply and request.action == "edit":
                 saved = await self.store.asset_get(actor)
                 assets = [InputAsset(**saved)] if saved else []
         # Repeated images do not consume separate reference positions.

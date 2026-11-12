@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from native.config import Settings
+from native.identity import actor_from_event
 from native.models import (
     Connection,
     ImageBatch,
@@ -322,6 +323,116 @@ async def test_duplicate_auto_request_after_result_cache_changes_reuses_task(
         assert repeated.task_id == first.task_id
         service.image_adapter.generate.assert_awaited_once()
         assert (await service.get_task(event, first.task_id))["quota_status"] == "settled"
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize(
+    "action, source, expected",
+    [
+        ("auto", "history", "generate"),
+        ("generate", "history", "generate"),
+        ("edit", "history", "edit"),
+        ("auto", "current", "edit"),
+        ("auto", "reply", "edit"),
+        ("auto", "asset_id", "edit"),
+        ("generate", "current", "generate"),
+        ("generate", "reply", "generate"),
+    ],
+)
+async def test_public_image_action_controls_reference_sources(
+    tmp_path, event_factory, png_data, action, source, expected
+):
+    service = await make_service(tmp_path)
+    service.image_adapter.generate = AsyncMock(return_value=ImageBatch([RemoteImage(data=png_data)]))
+    event = event_factory(message="new-request")
+    try:
+        cached = await service.assets.import_data(actor_from_event(event), png_data)
+        references = []
+        if source in ("current", "reply"):
+            image = type("Image", (), {})()
+            image.convert_to_file_path = AsyncMock(return_value=cached.path)
+            event.components = [image] if source == "current" else [type("Reply", (), {"chain": [image]})()]
+        elif source == "asset_id":
+            references = [cached.asset_id]
+        handle = await service.public_api.submit_image(
+            event, ImageRequest("画一只蓝色美西螈", action=action, references=references)
+        )
+        await service.queue.join()
+        assert (await service.get_task(event, handle.task_id))["status"] == "succeeded"
+        service.image_adapter.generate.assert_awaited_once()
+        _, request, assets = service.image_adapter.generate.await_args.args
+        assert request.action == expected
+        assert handle.accepted["action"] == expected
+        assert handle.accepted["reference_count"] == len(assets) == (1 if expected == "edit" else 0)
+        if assets:
+            assert assets[0].sha256 == cached.sha256
+        assert all(row["used"] == 1 and row["held"] == 0 for row in (await service.quota(event))["image"])
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("failure", ["platform", "target", "at_all", "download", "file"])
+async def test_explicit_avatar_failure_never_falls_back_to_cached_image(
+    tmp_path, event_factory, png_data, failure
+):
+    service = await make_service(tmp_path)
+    mention = (
+        type("AtAll", (), {})() if failure == "at_all"
+        else type("At", (), {"qq": "all" if failure == "target" else "542140488"})()
+    )
+    event = event_factory(components=[mention])
+    event.get_platform_name = lambda: "discord" if failure == "platform" else "aiocqhttp"
+    service.transport.download = AsyncMock(
+        side_effect=OSError("unavailable") if failure == "file" else NativeError("download_failed", "unavailable")
+    )
+    service.image_adapter.generate = AsyncMock()
+    try:
+        await service.assets.import_data(actor_from_event(event), png_data)
+        with pytest.raises(NativeError, match="头像"):
+            await service.public_api.submit_image(event, ImageRequest("参考用户头像", action="edit"))
+        assert not await service.list_image_tasks(event)
+        service.image_adapter.generate.assert_not_awaited()
+        if failure not in ("download", "file"):
+            service.transport.download.assert_not_awaited()
+        assert all(row["used"] == row["held"] == 0 for row in (await service.quota(event))["image"])
+    finally:
+        await service.close()
+
+
+async def test_quoted_template_and_mentioned_avatar_are_both_edit_references(
+    tmp_path, event_factory, png_data
+):
+    from io import BytesIO
+
+    from PIL import Image
+
+    service = await make_service(tmp_path)
+    avatar = BytesIO()
+    Image.new("RGB", (32, 32), "red").save(avatar, format="PNG")
+    service.transport.download = AsyncMock(return_value=avatar.getvalue())
+    service.image_adapter.generate = AsyncMock(return_value=ImageBatch([RemoteImage(data=png_data)]))
+    event = event_factory()
+    event.get_platform_name = lambda: "aiocqhttp"
+    try:
+        template = await service.assets.import_data(actor_from_event(event), png_data)
+        image = type("Image", (), {})()
+        image.convert_to_file_path = AsyncMock(return_value=template.path)
+        event.components = [
+            type("Reply", (), {"chain": [image]})(),
+            type("At", (), {"qq": event.get_self_id()})(),
+            type("At", (), {"qq": "542140488"})(),
+        ]
+        handle = await service.public_api.submit_image(
+            event, ImageRequest("参考引用图片，把角色换成所 @ 用户的头像")
+        )
+        await service.queue.join()
+        _, request, assets = service.image_adapter.generate.await_args.args
+        assert request.action == "edit" and handle.accepted["reference_count"] == len(assets) == 2
+        assert assets[0].sha256 == template.sha256 and assets[1].sha256 != template.sha256
+        service.transport.download.assert_awaited_once_with(
+            "https://q1.qlogo.cn/g?b=qq&nk=542140488&s=640", service.settings.storage["max_input_bytes"]
+        )
     finally:
         await service.close()
 
