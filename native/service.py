@@ -14,7 +14,7 @@ from .adapters import ImageAdapter, SearchAdapter
 from .assets import AssetStore, atomic_write
 from .capabilities import CapabilityRegistry
 from .config import Settings
-from .diagnostics import Diagnostics, connection_info, safe_error
+from .diagnostics import Diagnostics, connection_info, runtime_info, safe_error
 from .identity import actor_from_event
 from .models import (
     Artifact,
@@ -48,7 +48,9 @@ class NativeService:
         self.context, self.settings, self.root = context, settings, Path(data_dir)
         self.delivery = delivery
         self.tools_callback = None
-        self.diagnostics = Diagnostics()
+        self.diagnostics = Diagnostics(directory=self.root / "diagnostics")
+        self.runtime_info = runtime_info()
+        self.registered_commands = []
         self.last_readiness = {}
         self.last_connections = {}
         self.command_conflicts = []
@@ -140,6 +142,15 @@ class NativeService:
             self.workers.append(asyncio.create_task(self._worker(), name="openai-native-worker"))
         self.maintenance = asyncio.create_task(self._maintenance(), name="openai-native-cleanup")
         self._initialized = True
+        self.configure_diagnostics(self.settings.data["diagnostics"])
+
+    def configure_diagnostics(self, values):
+        self.settings.data["diagnostics"] = dict(values)
+        self.diagnostics.configure(enabled=values["enabled"], max_bytes=values["max_mb"] * 1024 * 1024)
+        if values["enabled"]:
+            if callable(self.command_conflicts_callback):
+                self.command_conflicts_callback()
+            self.diagnostics.add(kind="runtime", **self.runtime_info, commands=self.registered_commands)
 
     def _ready(self):
         if not self._initialized or self._closing:
@@ -159,6 +170,7 @@ class NativeService:
         connection = await self.resolver.resolve(event, feature)
         if event is not None:
             self.last_connections[feature] = connection
+        self.diagnostics.remember_connection(connection)
         self.diagnostics.add(event, kind="connection", feature=feature, **connection_info(connection))
         return connection
 
@@ -957,6 +969,9 @@ class NativeService:
             "features": features,
             "recent": self.diagnostics.snapshot(),
             "command_conflicts": self.command_conflicts,
+            "registered_commands": self.registered_commands,
+            "runtime": self.runtime_info,
+            "logging": self.diagnostics.logging_status(),
             "notice": "配置检查不调用付费接口；真实账号通过情况来自已完成请求。",
         }
 

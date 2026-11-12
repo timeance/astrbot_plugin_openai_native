@@ -14,6 +14,7 @@ from astrbot.core.agent.tool import ToolSet
 
 from .native.commands import parse_image_command, quoted_prompt_from_event
 from .native.config import Settings
+from .native.diagnostics import message_info, safe_error
 from .native.identity import actor_from_event
 from .native.models import Artifact, ImageRequest, NativeError, SearchRequest
 from .native.page import PageAPI
@@ -93,7 +94,7 @@ def filter_tool_set(original: ToolSet, available: dict, settings: Settings) -> T
     PLUGIN_NAME,
     "OpenAI Native contributors",
     "OpenAI 原生搜索、生图、编辑和 GIF",
-    "0.1.2",
+    "0.1.4",
     "https://github.com/timeance/astrbot_plugin_openai_native",
 )
 class OpenAINativePlugin(Star):
@@ -149,23 +150,41 @@ class OpenAINativePlugin(Star):
         result.tools = [t for t in result.tools if t.name in TOOL_NAMES]
         return result
 
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=10000)
+    async def diagnose_message(self, event: AstrMessageEvent):
+        if not self.service.diagnostics.enabled:
+            return
+        try:
+            self.service.diagnostics.add(event, kind="message", **message_info(event))
+        except Exception:
+            self.service.diagnostics.add(event, kind="message", state="capture_failed")
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=0)
     async def remember_images(self, event: AstrMessageEvent):
         if not self.settings.feature("image")["enabled"]:
             return
         try:
             await self.service.remember_images(event)
-        except NativeError:
+        except NativeError as exc:
             # Invalid input must not stop ordinary chatting.
-            pass
+            if self.service.diagnostics.enabled:
+                self.service.diagnostics.add(event, kind="reference_cache", state="failed", error=safe_error(exc))
+        else:
+            if self.service.diagnostics.enabled:
+                self.service.diagnostics.add(event, kind="reference_cache", state="completed")
 
     def _check_command_conflicts(self):
         from astrbot.core.star.star_handler import EventType, star_handlers_registry
 
         conflicts = []
+        registered = []
         names = {"生图", "生动图", "生图任务", "生图取消"}
         for handler in star_handlers_registry.get_handlers_by_event_type(EventType.AdapterMessageEvent):
             if handler.handler_module_path == self.__class__.__module__:
+                for rule in handler.event_filters:
+                    command = getattr(rule, "command_name", None)
+                    if command:
+                        registered.append({"command": command, "handler": handler.handler_full_name})
                 continue
             for rule in handler.event_filters:
                 command = getattr(rule, "command_name", None)
@@ -173,6 +192,7 @@ class OpenAINativePlugin(Star):
                 for name in names.intersection({command, *aliases}):
                     conflicts.append({"command": "/" + name, "plugin": handler.handler_module_path})
         self.service.command_conflicts = conflicts
+        self.service.registered_commands = registered
 
     def _trace_tool(self, event, name, state, **kwargs):
         recorder = getattr(self.service, "record_tool_call", None)

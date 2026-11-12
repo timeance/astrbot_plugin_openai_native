@@ -15,7 +15,7 @@ from copy import deepcopy
 from pathlib import Path
 from types import MethodType, ModuleType, SimpleNamespace
 from typing import Generic, TypeVar, overload
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from PIL import Image
@@ -58,6 +58,7 @@ def setup_page():
     service = SimpleNamespace(
         diagnostics_snapshot=AsyncMock(return_value={"features": {}, "recent": [], "notice": "cached"}),
         capabilities=SimpleNamespace(clear=AsyncMock()),
+        configure_diagnostics=Mock(),
     )
     return PageAPI(context, config, active, service), config, active, service
 
@@ -984,3 +985,27 @@ async def test_readonly_routes_dispatch_both_prefixes_with_auth_and_no_store(act
             "task_id": "image-new", "artifact_id": "missing",
         })
         assert result.status_code == 404 and result.headers["Cache-Control"] == "no-store"
+
+
+async def test_diagnostic_save_applies_immediately_without_reloading_other_config(setup_page):
+    api, config, _, service = setup_page
+    result = await api.apply_patch(payload(api, {"diagnostics": {"enabled": True, "max_mb": 100}}))
+    service.configure_diagnostics.assert_called_once_with({"enabled": True, "max_mb": 100})
+    assert result["active_values"]["diagnostics"] == result["values"]["diagnostics"]
+    assert not result["needs_reload"]
+    result = await api.apply_patch(payload(api, {
+        "diagnostics": {"enabled": False, "max_mb": 20}, "image": {"model": "new-model"},
+    }))
+    assert result["active_values"]["diagnostics"] == {"enabled": False, "max_mb": 20}
+    assert result["changed_paths"] == ["image.model"]
+    assert config["diagnostics"]["enabled"] is False
+
+
+async def test_failed_save_does_not_enable_diagnostic_logging(setup_page):
+    api, config, _, service = setup_page
+    config.fail = True
+    with pytest.raises(PageError, match="配置保存失败"):
+        await api.apply_patch(payload(api, {"diagnostics": {"enabled": True}}))
+    service.configure_diagnostics.assert_not_called()
+    assert api.snapshot()["active_values"]["diagnostics"]["enabled"] is False
+    assert "diagnostics" not in config

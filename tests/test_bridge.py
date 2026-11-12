@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from native.config import Settings
+from native.diagnostics import Diagnostics
 from native.identity import actor_from_event
 from native.models import Artifact, NativeError, SearchHit, SearchResult
 
@@ -228,6 +229,7 @@ def plugin(bridge):
         probe=AsyncMock(return_value={"status": "tested"}),
         available_tools=AsyncMock(return_value={"image": False, "search": False}),
         remember_images=AsyncMock(),
+        diagnostics=Diagnostics(),
         public_api=SimpleNamespace(get_task=AsyncMock(return_value={"status": "queued"})),
     )
     return instance
@@ -434,6 +436,11 @@ from astrbot.core.star.star_handler import EventType, star_handlers_registry
 assert issubclass(bridge.OpenAINativePlugin, Star)
 handlers = {handler.handler_name: handler
             for handler in star_handlers_registry.get_handlers_by_module_name(bridge.__name__)}
+diagnostic_hook = handlers["diagnose_message"]
+assert diagnostic_hook.event_type == EventType.AdapterMessageEvent
+assert diagnostic_hook.extras_configs["priority"] == 10000
+assert any(isinstance(item, EventMessageTypeFilter) and item.event_message_type == EventMessageType.ALL
+           for item in diagnostic_hook.event_filters)
 cache_hook = handlers["remember_images"]
 assert cache_hook.event_type == EventType.AdapterMessageEvent
 assert cache_hook.extras_configs["priority"] == 0
@@ -597,3 +604,31 @@ async def test_task_commands_use_caller_and_stop_agent(plugin):
     event = Event(text="/生图取消 task1")
     assert "按实际结果结算" in [item async for item in plugin.cancel_command(event)][0]
     plugin.service.public_api.cancel_task.assert_awaited_once_with(event, "task1")
+
+
+
+async def test_opt_in_message_diagnostic_does_not_submit_or_stop_event(plugin):
+    event = Event(text="生图 根据三张参考图生成表情")
+    event.is_at_or_wake_command = True
+    event.set_extra("activated_handlers", [SimpleNamespace(handler_full_name="native.image_command")])
+    await plugin.diagnose_message(event)
+    assert not plugin.service.diagnostics.snapshot()
+    plugin.service.diagnostics.enabled = True
+    await plugin.diagnose_message(event)
+    record = plugin.service.diagnostics.snapshot()[0]
+    assert record["kind"] == "message"
+    assert record["command_boundary"] == "space"
+    assert record["activated_handlers"] == ["native.image_command"]
+    assert not getattr(event, "stopped", False)
+    plugin.service.submit_image.assert_not_awaited()
+
+
+async def test_reference_cache_failure_is_visible_when_logging_enabled(plugin):
+    plugin.service.diagnostics.enabled = True
+    plugin.service.remember_images.side_effect = NativeError("validation", "Invalid input image")
+    event = Event()
+    await plugin.remember_images(event)
+    record = plugin.service.diagnostics.snapshot()[0]
+    assert record["kind"] == "reference_cache" and record["state"] == "failed"
+    assert record["error"]["category"] == "validation"
+    assert not getattr(event, "stopped", False)

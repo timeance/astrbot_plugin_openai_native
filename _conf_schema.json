@@ -145,8 +145,14 @@
         "type": "string",
         "description": "搜索触发策略",
         "default": "explicit",
-        "options": ["on_demand", "explicit"],
-        "labels": ["按需搜索", "仅明确请求搜索"],
+        "options": [
+          "on_demand",
+          "explicit"
+        ],
+        "labels": [
+          "按需搜索",
+          "仅明确请求搜索"
+        ],
         "invisible": true
       },
       "snippet_chars": {
@@ -569,5 +575,26 @@
       }
     },
     "invisible": true
+  },
+  "diagnostics": {
+    "type": "object",
+    "description": "诊断日志",
+    "invisible": true,
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "保存诊断日志",
+        "default": false,
+        "invisible": true,
+        "hint": "默认关闭；开启后滚动保存命令、工具和任务诊断，保存后立即生效。"
+      },
+      "max_mb": {
+        "type": "int",
+        "description": "诊断日志总量上限（MB）",
+        "default": 100,
+        "invisible": true,
+        "hint": "1–10000 MB，默认 100 MB；包括当前文件与轮转备份，达到上限后清理最旧日志。"
+      }
+    }
   }
 }

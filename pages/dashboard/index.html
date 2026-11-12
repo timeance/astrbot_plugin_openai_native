@@ -39,7 +39,7 @@
     </nav>
 
     <main>
-      <div id="notice" class="notice" role="status" aria-live="polite">正在读取配置。保存只持久化，手动重载插件后生效。</div>
+      <div id="notice" class="notice" role="status" aria-live="polite">正在读取配置。诊断日志保存后立即生效，其他配置需手动重载插件。</div>
       <div class="recovery-actions">
         <button type="button" id="retry-load" class="button small" hidden>重新连接并读取配置</button>
         <button type="button" id="refresh-settings" class="button small" hidden>读取最新配置并保留草稿</button>
@@ -63,8 +63,10 @@
               <div class="section-heading compact"><div><h3>配置与生效</h3><p id="runtime-state">尚未读取配置。</p></div><span id="revision-label" class="meta"></span></div>
               <div id="runtime-diff"></div>
             </section>
+            <div id="overview-fields"></div>
+            <div id="diagnostic-logging-status" class="surface" role="status" aria-live="polite">正在读取日志保存状态…</div>
             <section class="surface">
-              <div class="section-heading compact"><div><h3>最近工具诊断</h3><p>只显示有界记录中的状态与脱敏错误，不展示聊天正文。</p></div></div>
+              <div class="section-heading compact"><div><h3>最近调用诊断</h3><p>只显示有界记录中的状态与脱敏错误，不展示聊天正文。</p></div></div>
               <div id="recent-records" class="empty-state">尚无诊断记录。</div>
               <div id="command-conflicts"></div>
             </section>
@@ -112,7 +114,7 @@
         </fieldset>
 
         <footer id="save-bar" class="save-bar" hidden>
-          <div><strong id="draft-state" aria-live="polite">配置未加载</strong><p id="save-hint">保存后请在 AstrBot 插件管理中手动重载。</p></div>
+          <div><strong id="draft-state" aria-live="polite">配置未加载</strong><p id="save-hint">诊断日志保存后立即生效；其他配置请手动重载。</p></div>
           <button type="submit" class="button primary" id="save" disabled>保存配置</button>
         </footer>
       </form>

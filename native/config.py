@@ -74,6 +74,7 @@ DEFAULTS = {
         "max_output_bytes": 104857600,
         "max_total_bytes": 2147483648,
     },
+    "diagnostics": {"enabled": False, "max_mb": 100},
     "network": {
         "connect_timeout": 10,
         "download_timeout": 60,
@@ -103,6 +104,11 @@ class Settings:
                 if self.data["limits"].get(name) == -1:
                     self.data["limits"][name] = 0
             ZoneInfo(self.limits["timezone"])
+            diagnostic = self.data["diagnostics"]
+            if type(diagnostic["enabled"]) is not bool or type(diagnostic["max_mb"]) is not int:
+                raise ValueError("diagnostics")
+            if not 1 <= diagnostic["max_mb"] <= 10000:
+                raise ValueError("diagnostics.max_mb")
             positive = {
                 "limits": (
                     "search_concurrency",
