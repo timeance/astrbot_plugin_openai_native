@@ -44,9 +44,12 @@ def _error(exc, *, ambiguous=False):
 
 
 class NativeService:
-    def __init__(self, context, settings: Settings, data_dir: Path, *, transport=None, delivery=None):
+    def __init__(
+        self, context, settings: Settings, data_dir: Path, *, transport=None, delivery=None, failure_delivery=None
+    ):
         self.context, self.settings, self.root = context, settings, Path(data_dir)
         self.delivery = delivery
+        self.failure_delivery = failure_delivery
         self.tools_callback = None
         self.diagnostics = Diagnostics(directory=self.root / "diagnostics")
         self.runtime_info = runtime_info()
@@ -199,7 +202,9 @@ class NativeService:
         else:
             state = "temporary_failure"
         details = safe_error(error, connection)
-        await self._observe(connection, capability, state, category, details)
+        # Content moderation describes this input, not the provider capability.
+        if category != "policy_rejected":
+            await self._observe(connection, capability, state, category, details)
         self.diagnostics.add(
             kind="upstream_error",
             capability=capability,
@@ -580,6 +585,7 @@ class NativeService:
                 await self._record_error(connection, capability, error)
             if op["artifacts"] and not pending:
                 await self._deliver(operation_id)
+            await self._notify_failure(operation_id, connection)
         finally:
             self._finish_notice(operation_id)
 
@@ -668,6 +674,30 @@ class NativeService:
             await self.store.update(operation_id, delivery_status="unknown")
         else:
             await self.store.update(operation_id, delivery_status="sent")
+
+    async def _notify_failure(self, operation_id, connection):
+        op = await self.store.get(operation_id)
+        event = self.events.get(operation_id)
+        if not op["deliver"] or op["cancel_requested"] or event is None or self.failure_delivery is None:
+            return
+        result = {
+            "task_id": operation_id,
+            "status": op["status"],
+            "generated": op["actual"],
+            "requested": op["requested"],
+            "reference_count": len(op["request"]["assets"]),
+            "held": op["pending"],
+            "delivery_status": op["delivery_status"],
+            "error": safe_error(op["error"], connection),
+        }
+        # A failed notice must not kill the worker or repeat a paid request.
+        try:
+            await self.failure_delivery(event, result)
+        except Exception:
+            status = "unknown"
+        else:
+            status = "sent"
+        self.diagnostics.add(kind="image_failure_delivery", task_id=operation_id, status=status)
 
     async def _authorized(self, event, operation_id):
         self._ready()

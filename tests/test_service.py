@@ -459,3 +459,121 @@ async def test_public_api_still_rejects_conflicting_arguments_before_reservation
         assert not (await service.list_image_tasks(event))
     finally:
         await service.close()
+
+
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_background_failure_notifies_with_safe_reason_without_resubmitting(
+    tmp_path, event_factory, png_data, partial, ambiguous
+):
+    service = await make_service(tmp_path)
+    service.delivery = AsyncMock()
+    service.failure_delivery = AsyncMock()
+    error = NativeError(
+        "upstream_error" if ambiguous else "policy_rejected",
+        "HTTP 502" if ambiguous else "moderation_blocked secret-not-for-storage https://private.test",
+        ambiguous=ambiguous,
+        status_code=502 if ambiguous else 400,
+        upstream_code=None if ambiguous else "moderation_blocked",
+        request_id="req_failure",
+    )
+    service.image_adapter.generate = AsyncMock(side_effect=(
+        [ImageBatch([RemoteImage(data=png_data)]), error] if partial else [error]
+    ))
+    event = event_factory()
+    try:
+        task = await service.submit_image(event, ImageRequest("circle", action="generate", n=2), deliver=True)
+        await asyncio.wait_for(service.queue.join(), 3)
+        result = await service.get_task(event, task.task_id)
+        assert result["status"] == ("needs_reconciliation" if ambiguous else ("partial" if partial else "failed"))
+        assert result["generated"] == int(partial) and result["held"] == int(ambiguous)
+        assert service.image_adapter.generate.await_count == 1 + int(partial)
+        service.failure_delivery.assert_awaited_once()
+        notice_event, notice = service.failure_delivery.await_args.args
+        assert notice_event is event and notice["task_id"] == task.task_id
+        assert notice["status"] == result["status"] and notice["generated"] == int(partial)
+        assert notice["error"]["status_code"] == (502 if ambiguous else 400)
+        assert notice["error"]["request_id"] == "req_failure"
+        assert "secret-not-for-storage" not in str(notice) and "private.test" not in str(notice)
+        if partial and not ambiguous:
+            service.delivery.assert_awaited_once()
+        else:
+            service.delivery.assert_not_awaited()
+        assert any(row["kind"] == "image_failure_delivery" and row["status"] == "sent"
+                   for row in service.diagnostics.snapshot())
+        quota = await service.quota(event)
+        assert all(row["used"] == int(partial) and row["held"] == int(ambiguous) for row in quota["image"])
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_failure_notices_respect_public_api_and_user_cancellation(tmp_path, event_factory, cancelled):
+    service = await make_service(tmp_path)
+    service.failure_delivery = AsyncMock()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def generate(*args):
+        started.set()
+        await release.wait()
+        raise NativeError("policy_rejected", "moderation_blocked", status_code=400)
+
+    service.image_adapter.generate = AsyncMock(side_effect=generate)
+    event = event_factory()
+    try:
+        request = ImageRequest("circle", action="generate")
+        if cancelled:
+            task = await service.submit_image(event, request, deliver=True)
+        else:
+            task = await service.public_api.submit_image(event, request)
+        await asyncio.wait_for(started.wait(), 3)
+        if cancelled:
+            await service.cancel_task(event, task.task_id)
+        release.set()
+        await asyncio.wait_for(service.queue.join(), 3)
+        service.failure_delivery.assert_not_awaited()
+        service.image_adapter.generate.assert_awaited_once()
+    finally:
+        release.set()
+        await service.close()
+
+
+async def test_failed_notice_does_not_stop_worker_or_repeat_generation(tmp_path, event_factory, png_data):
+    service = await make_service(tmp_path)
+    service.failure_delivery = AsyncMock(side_effect=RuntimeError("Message delivery failed"))
+    service.image_adapter.generate = AsyncMock(side_effect=[
+        NativeError("policy_rejected", "moderation_blocked", status_code=400),
+        ImageBatch([RemoteImage(data=png_data)]),
+    ])
+    event = event_factory()
+    try:
+        failed = await service.submit_image(event, ImageRequest("circle", action="generate"), deliver=True)
+        await asyncio.wait_for(service.queue.join(), 3)
+        assert (await service.get_task(event, failed.task_id))["status"] == "failed"
+        assert any(row["kind"] == "image_failure_delivery" and row["status"] == "unknown"
+                   for row in service.diagnostics.snapshot())
+        following = await service.public_api.submit_image(event, ImageRequest("square", action="generate"))
+        await asyncio.wait_for(service.queue.join(), 3)
+        assert (await service.get_task(event, following.task_id))["status"] == "succeeded"
+        assert service.image_adapter.generate.await_count == 2
+        service.failure_delivery.assert_awaited_once()
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("verified", [False, True])
+async def test_policy_rejection_keeps_capability_evidence_and_diagnostic(tmp_path, event_factory, verified):
+    service = await make_service(tmp_path)
+    try:
+        connection = await service._connection(event_factory(), "image")
+        if verified:
+            await service.capabilities.record(connection, "edit:png", "available", "successful_request")
+        before = await service.capabilities.get(connection, "edit:png")
+        await service._record_error(connection, "edit:png", NativeError(
+            "policy_rejected", "moderation_blocked", status_code=400, upstream_code="moderation_blocked"
+        ))
+        assert await service.capabilities.get(connection, "edit:png") == before
+        assert service.diagnostics.snapshot()[0]["error"]["upstream_code"] == "moderation_blocked"
+        await service.capabilities.ensure(connection, "edit:png")
+    finally:
+        await service.close()
