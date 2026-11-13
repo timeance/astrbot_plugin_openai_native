@@ -736,3 +736,24 @@ async def test_reference_cache_failure_is_visible_when_logging_enabled(plugin):
     assert record["kind"] == "reference_cache" and record["state"] == "failed"
     assert record["error"]["category"] == "validation"
     assert not getattr(event, "stopped", False)
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_background_failure_and_task_query_share_actionable_details(plugin, ambiguous):
+    event = Event()
+    result = {
+        "task_id": "actual-task-id", "status": "needs_reconciliation" if ambiguous else "failed",
+        "generated": 0, "requested": 1, "held": int(ambiguous),
+        "error": {"category": "upstream_error" if ambiguous else "policy_rejected",
+                  "message": "HTTP 502" if ambiguous else "moderation_blocked", "request_id": "req_failure"},
+    }
+    await plugin._deliver_failure(event, result)
+    event.send.assert_awaited_once()
+    notice = event.send.await_args.args[0]
+    assert "actual-task-id" in notice and "0/1" in notice and "req_failure" in notice
+    if ambiguous:
+        assert "上游完成情况未知" in notice and "请勿重复提交" in notice
+    else:
+        assert "内容审核拒绝" in notice and "调整内容" in notice
+    plugin.service.public_api.get_task.return_value = result
+    assert await plugin._task_command(event, "actual-task-id") == notice

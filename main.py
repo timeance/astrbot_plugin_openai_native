@@ -103,7 +103,8 @@ class OpenAINativePlugin(Star):
         self.config = config
         self.settings = Settings(dict(config))
         self.service = NativeService(
-            context, self.settings, StarTools.get_data_dir(PLUGIN_NAME), delivery=self._deliver
+            context, self.settings, StarTools.get_data_dir(PLUGIN_NAME),
+            delivery=self._deliver, failure_delivery=self._deliver_failure,
         )
         self.service.tools_callback = self.build_tools
         self.service.command_conflicts_callback = self._check_command_conflicts
@@ -125,6 +126,9 @@ class OpenAINativePlugin(Star):
         for artifact in artifacts:
             # image_result references the saved original; never decode/re-encode GIF.
             await event.send(event.image_result(artifact.path))
+
+    async def _deliver_failure(self, event: AstrMessageEvent, result: dict):
+        await event.send(event.plain_result(self._task_message(result)))
 
     async def build_tools(self, event: AstrMessageEvent) -> ToolSet:
         """Return only this plugin's eligible tools, preserving AstrBot permission wrappers."""
@@ -466,6 +470,7 @@ class OpenAINativePlugin(Star):
             "auth_blocked": "请让管理员核查账号权限，修正后清除旧能力记录。",
             "unsupported": "请让管理员检查协议、模型及账号支持情况。",
             "not_found": "请使用本人在当前会话创建的任务 ID。",
+            "policy_rejected": "本次提示词或参考图被上游内容审核拒绝，请调整内容后再提交。此错误不表示 Key 或模型不可用。",
         }
         suffix = steps.get(exc.category, "")
         return f"{exc.message}\n{suffix}".strip()
@@ -510,11 +515,19 @@ class OpenAINativePlugin(Star):
         result = await self.service.public_api.get_task(event, task_id.strip())
         if result.get("kind", "image") != "image":
             raise NativeError("invalid_request", "这不是生图任务 ID。")
+        return self._task_message(result)
+
+    def _task_message(self, result):
         message = f"任务 ID：{result['task_id']}\n状态：{self._state_label(result['status'])}\n已生成：{result.get('generated', 0)}/{result.get('requested', 0)} 张"
         if result.get("reference_count", 0) > 0:
             message += f"\n参考图：{result['reference_count']} 张"
         if result.get("error"):
-            message += "\n原因：" + result["error"].get("message", "执行失败")
+            error = result["error"]
+            message += "\n原因：" + self._friendly_error(NativeError(
+                error.get("category", "upstream_error"), error.get("message", "执行失败")
+            ))
+            if error.get("request_id"):
+                message += "\n上游请求 ID：" + error["request_id"]
         if result.get("held") and result["status"] == "needs_reconciliation":
             message += "\n上游完成情况未知，额度暂保留，请管理员核对；请勿重复提交。"
         delivery = result.get("delivery_status")
