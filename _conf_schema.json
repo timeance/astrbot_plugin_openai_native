@@ -363,6 +363,13 @@
         "default": "auto",
         "invisible": true
       },
+      "require_at_in_group": {
+        "type": "bool",
+        "description": "群聊仅在 @本机器人时生效",
+        "default": false,
+        "hint": "群聊的生图、编辑和 GIF 请求须在当前消息 @本机器人；@其他用户、@全体或引用机器人消息均不满足。私聊不受影响。",
+        "invisible": true
+      },
       "acceptance_template": {
         "type": "string",
         "description": "任务受理回执模板",

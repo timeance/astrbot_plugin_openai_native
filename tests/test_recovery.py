@@ -158,7 +158,7 @@ async def test_download_retry_does_not_rehold_resolved_child(
             assert (op["pending"], op["next_index"]) == (1, 1)
             await _assert_quota(service, event, "image", 1, 1)
             await service.reconcile(event_factory(admin=True), handle.task_id, 1)
-        await _assert_quota(service, event, "image", 1, 0)
+        await _assert_quota(service, event, "image", 2, 0)
 
         original_results = await service.get_results(event, handle.task_id)
         assert len(original_results) == 1
@@ -167,7 +167,7 @@ async def test_download_retry_does_not_rehold_resolved_child(
             assert state["status"] == "partial"
             assert (state["generated"], state["held"]) == (1, 0)
             assert await service.get_results(event, handle.task_id) == original_results
-            await _assert_quota(service, event, "image", 1, 0)
+            await _assert_quota(service, event, "image", 2, 0)
         assert len(posts) == 2
     finally:
         await service.close()

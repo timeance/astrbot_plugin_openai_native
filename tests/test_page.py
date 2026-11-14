@@ -99,7 +99,7 @@ def test_new_page_fields_match_config_schema(setup_page):
         "search.trigger_policy", "search.max_queries", "search.max_results",
         "search.default_results", "search.max_tool_calls", "search.snippet_chars",
         "search.response_chars", "search.show_citations", "search.show_links",
-        "search.include_raw", "image.acceptance_template", "image.presets",
+        "search.include_raw", "image.require_at_in_group", "image.acceptance_template", "image.presets",
         "limits.search_calls_per_message",
     )
     snapshot = api.snapshot()
@@ -120,6 +120,7 @@ async def test_search_and_image_page_settings_round_trip(setup_page):
         },
         "limits": {"search_calls_per_message": 3, "user_search": 0},
         "image": {
+            "require_at_in_group": True,
             "acceptance_template": "任务 {task_id} 已接受：{kind}",
             "presets": {"水彩": "柔和水彩风格"},
         },
@@ -306,6 +307,7 @@ async def test_unknown_and_secret_patch_rejected_without_save(patch, setup_page)
         {"search": {"enabled": 1}},
         {"image": {"model": 12}},
         {"limits": {"admin_exempt": "false"}},
+        {"image": {"require_at_in_group": "true"}},
         {"limits": {"user_image": -2}},
         {"limits": {"search_concurrency": 0}},
         {"search": {"max_queries": 5}},

@@ -35,3 +35,16 @@ def actor_from_event(event: object) -> Actor:
     # AstrBot 4.29.4 is_admin() is defined as role == "admin". Do not accept
     # arbitrary event.is_admin booleans or group/platform administrator flags.
     return Actor(platform, bot, sender, umo, group, getattr(event, "role", None) == "admin", message_id)
+
+
+def image_trigger_allowed(event: object, require_at_in_group: bool) -> bool:
+    """Only a direct mention of this receiving bot satisfies the group gate."""
+    if not require_at_in_group:
+        return True
+    actor = actor_from_event(event)
+    if not actor.group_id:
+        return True
+    return any(
+        type(component).__name__ == "At" and str(getattr(component, "qq", "")) == actor.bot_id
+        for component in event.get_messages()
+    )

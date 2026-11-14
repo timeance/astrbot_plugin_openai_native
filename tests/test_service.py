@@ -502,7 +502,8 @@ async def test_background_failure_notifies_with_safe_reason_without_resubmitting
         assert any(row["kind"] == "image_failure_delivery" and row["status"] == "sent"
                    for row in service.diagnostics.snapshot())
         quota = await service.quota(event)
-        assert all(row["used"] == int(partial) and row["held"] == int(ambiguous) for row in quota["image"])
+        assert all(row["used"] == int(partial) + int(not ambiguous)
+                   and row["held"] == int(ambiguous) for row in quota["image"])
     finally:
         await service.close()
 
@@ -575,5 +576,51 @@ async def test_policy_rejection_keeps_capability_evidence_and_diagnostic(tmp_pat
         assert await service.capabilities.get(connection, "edit:png") == before
         assert service.diagnostics.snapshot()[0]["error"]["upstream_code"] == "moderation_blocked"
         await service.capabilities.ensure(connection, "edit:png")
+    finally:
+        await service.close()
+
+
+async def test_failed_image_attempts_count_without_charging_unsubmitted_children_or_recovery(
+    tmp_path, event_factory, png_data
+):
+    service = await make_service(tmp_path)
+    rejection = NativeError("policy_rejected", "moderation_blocked", status_code=400)
+    service.image_adapter.generate = AsyncMock(side_effect=[ImageBatch([RemoteImage(data=png_data)]), rejection, rejection])
+    event = event_factory()
+    try:
+        handle = await service.submit_image(event, ImageRequest("cat", n=3))
+        await service.queue.join()
+        task = await service.get_task(event, handle.task_id)
+        assert task["generated"] == 1 and task["status"] == "partial" and task["quota_status"] == "settled"
+        assert all(row["used"] == 2 and row["held"] == 0 for row in (await service.quota(event))["image"])
+        await service.retry_download(event, handle.task_id)
+        duplicate = await service.submit_image(event, ImageRequest("cat", n=3))
+        assert duplicate.task_id == handle.task_id
+        assert all(row["used"] == 2 for row in (await service.quota(event))["image"])
+        next_event = event_factory(message="m2")
+        failed = await service.submit_image(next_event, ImageRequest("dog"))
+        await service.queue.join()
+        task = await service.get_task(next_event, failed.task_id)
+        assert task["generated"] == 0 and task["status"] == "failed" and task["quota_status"] == "settled"
+        assert all(row["used"] == 3 and row["held"] == 0 for row in (await service.quota(event))["image"])
+        with pytest.raises(NativeError) as caught:
+            await service.submit_image(event_factory(message="m3"), ImageRequest("bird"))
+        assert caught.value.category == "quota_exceeded"
+        assert service.image_adapter.generate.await_count == 3
+    finally:
+        await service.close()
+
+
+async def test_uncertain_image_counts_once_after_reconciliation(tmp_path, event_factory):
+    service = await make_service(tmp_path)
+    service.image_adapter.generate = AsyncMock(side_effect=NativeError("timeout", "uncertain", ambiguous=True))
+    event = event_factory(admin=True)
+    try:
+        task = await service.submit_image(event, ImageRequest("cat"))
+        await service.queue.join()
+        assert all(row["used"] == 0 and row["held"] == 1 for row in (await service.quota(event))["image"])
+        await service.reconcile(event, task.task_id, 0)
+        assert all(row["used"] == 1 and row["held"] == 0 for row in (await service.quota(event))["image"])
+        service.image_adapter.generate.assert_awaited_once()
     finally:
         await service.close()

@@ -16,7 +16,7 @@ import pytest
 
 from native.config import Settings
 from native.diagnostics import Diagnostics
-from native.identity import actor_from_event
+from native.identity import actor_from_event, image_trigger_allowed
 from native.models import (
     Artifact,
     ImageBatch,
@@ -237,6 +237,7 @@ def plugin(bridge):
         probe=AsyncMock(return_value={"status": "tested"}),
         available_tools=AsyncMock(return_value={"image": False, "search": False}),
         remember_images=AsyncMock(),
+        quota=AsyncMock(return_value={"image": [{"scope": "user", "limit": 3, "used": 0, "held": 0}]}),
         diagnostics=Diagnostics(),
         public_api=SimpleNamespace(get_task=AsyncMock(return_value={"status": "queued"})),
     )
@@ -757,3 +758,135 @@ async def test_background_failure_and_task_query_share_actionable_details(plugin
         assert "内容审核拒绝" in notice and "调整内容" in notice
     plugin.service.public_api.get_task.return_value = result
     assert await plugin._task_command(event, "actual-task-id") == notice
+
+
+@pytest.mark.parametrize("enabled,group,components,expected", [
+    (False, "group-a", [], True),
+    (True, "", [], True),
+    (True, "group-a", [], False),
+    (True, "group-a", [("At", "other-bot")], False),
+    (True, "group-a", [("AtAll", "all")], False),
+    (True, "group-a", [("At", "all")], False),
+    (True, "group-a", [("Plain", "@bot-a")], False),
+    (True, "group-a", [("Reply", "bot-a")], False),
+    (True, "group-a", [("At", "bot-a")], True),
+    (True, "group-a", [("At", "other-user"), ("At", "bot-a")], True),
+])
+def test_image_trigger_requires_actual_receiving_bot_mention(enabled, group, components, expected):
+    event = Event(group=group)
+    event.is_at_or_wake_command = True  # A wake prefix/reply is insufficient.
+    event.get_messages = lambda: [
+        type(kind, (), {"qq": target, "sender_id": target})() for kind, target in components
+    ]
+    assert image_trigger_allowed(event, enabled) is expected
+
+
+@pytest.mark.parametrize("method,text", [
+    ("image_command", "/生图\n一只猫"),
+    ("gif_command", "/生动图 一只猫"),
+    ("command", "/onative image 一只猫"),
+    ("command", "/onative gif 一只猫"),
+])
+@pytest.mark.parametrize("target", ["other-bot", "bot-a"])
+async def test_mention_gate_commands_are_silent_without_stopping_other_handlers(plugin, method, text, target):
+    plugin.settings = Settings({"image": {"require_at_in_group": True}, "gif": {"enabled": True}})
+    event = Event(text=text)
+    event.get_messages = lambda: [type("At", (), {"qq": target})()]
+    replies = [reply async for reply in getattr(plugin, method)(event)]
+    if target == "bot-a":
+        assert len(replies) == 1
+        plugin.service.submit_image.assert_awaited_once()
+        assert event.stopped
+    else:
+        assert replies == []
+        plugin.service.submit_image.assert_not_awaited()
+        assert not getattr(event, "stopped", False)
+
+
+async def test_mention_gate_hides_tool_and_blocks_stale_tool_and_public_api(plugin, tmp_path, png_data):
+    from test_service import make_service
+
+    service = await make_service(tmp_path, image={"require_at_in_group": True})
+    plugin.service, plugin.settings = service, service.settings
+    service.image_adapter.generate = AsyncMock(return_value=ImageBatch([RemoteImage(data=png_data)]))
+    event = Event(text="画一只猫")
+    mentions = [type("At", (), {"qq": "other-bot"})()]
+    event.get_messages = lambda: mentions
+    service.assets.prepare = AsyncMock(return_value=[])
+    try:
+        req = SimpleNamespace(func_tool=ToolSet([image_tool(), Tool("other", {})]))
+        await plugin.on_llm_request(event, req)
+        assert [tool.name for tool in req.func_tool.tools] == ["other"]
+        assert all(call.args[1] != "image" for call in service.resolver.resolve.await_args_list)
+        result = json.loads(await plugin.image(event, "cat"))
+        assert result["error"]["category"] == "mention_required"
+        with pytest.raises(NativeError) as caught:
+            await service.public_api.submit_image(event, ImageRequest("cat"))
+        assert caught.value.category == "mention_required"
+        service.assets.prepare.assert_not_awaited()
+        service.image_adapter.generate.assert_not_awaited()
+        assert all(row["used"] == row["held"] == 0 for row in (await service.quota(event))["image"])
+        mentions.append(type("At", (), {"qq": "bot-a"})())
+        ready = await service.available_tools(event)
+        previous = service.last_readiness["image"].copy()
+        assert ready["image"]
+        result = json.loads(await plugin.image(event, "cat"))
+        await service.queue.join()
+        assert (await service.get_task(event, result["task_id"]))["generated"] == 1
+        mentions.pop()
+        assert not (await service.available_tools(event))["image"]
+        assert service.last_readiness["image"] == previous
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("limit,used,held,expected", [
+    (5, 1, 0, None), (5, 3, 0, 2), (5, 4, 0, 1), (5, 5, 0, 0),
+    (5, 2, 1, 2), (0, 50, 0, None),
+])
+async def test_delivery_only_warns_when_quota_remaining_is_at_most_two(plugin, limit, used, held, expected):
+    plugin.service.quota.return_value = {"image": [{"scope": "user", "limit": limit, "used": used, "held": held}]}
+    event = Event()
+    artifact = Artifact("a", "saved/original.png", "image/png", 123, "hash", 16, 16)
+    await plugin._deliver(event, [artifact])
+    assert event.send.await_args_list[0].args == (("original-file", artifact.path),)
+    if expected is None:
+        assert event.send.await_count == 1
+    else:
+        assert event.send.await_count == 2
+        assert f"剩余 {expected} 张" in event.send.await_args_list[1].args[0]
+        assert ("预占" in event.send.await_args_list[1].args[0]) is bool(held)
+
+
+async def test_quota_warning_failure_cannot_fail_image_delivery(plugin):
+    plugin.service.quota.return_value = {"image": [{"scope": "user", "limit": 3, "used": 1, "held": 0}]}
+    event = Event()
+    event.send.side_effect = [None, OSError("send failed")]
+    artifact = Artifact("a", "saved/original.png", "image/png", 123, "hash", 16, 16)
+    await plugin._deliver(event, [artifact])
+    event.send.assert_awaited()
+    plugin.service.quota.side_effect = OSError("quota read failed")
+    assert await plugin._image_quota_warning(event) == ""
+
+
+async def test_failure_notice_includes_low_quota_without_duplicate_for_delivered_partial(plugin):
+    plugin.service.quota.return_value = {"image": [{"scope": "user", "limit": 3, "used": 2, "held": 0}]}
+    event = Event()
+    result = {"task_id": "id", "status": "failed", "generated": 0, "requested": 1,
+              "error": {"category": "policy_rejected", "message": "moderation_blocked"}}
+    await plugin._deliver_failure(event, result)
+    assert "剩余 1 张" in event.send.await_args.args[0]
+    result.update(status="partial", generated=1, delivery_status="sent")
+    await plugin._deliver_failure(event, result)
+    assert "剩余" not in event.send.await_args.args[0]
+
+
+
+def test_gif_upstream_disabled_explains_provider_requirement_and_static_alternative(plugin):
+    result = plugin._task_message({
+        "task_id": "id", "status": "failed", "generated": 0, "requested": 1,
+        "error": {"category": "upstream_error", "message": "HTTP 400: GIF output is not enabled for this request."},
+    })
+    assert "上游未为本次请求启用原生 GIF" in result
+    assert "本地 GIF 开关不能开通上游权限" in result
+    assert "/生图 ... --格式 png" in result

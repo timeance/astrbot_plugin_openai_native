@@ -328,11 +328,15 @@ class Store:
                     "SELECT * FROM allocations WHERE operation_id=?", (operation_id,)
                 ) as cur:
                     allocations = await cur.fetchall()
+                used = actual
+                if op["kind"] == "image":
+                    # Failed submitted children consume quota; uncertain ones stay held.
+                    used = max(actual, op["submitted_count"] - pending)
                 for allocation in allocations:
                     await self.db.execute(
                         "UPDATE quota SET used=used+?,held=held+? WHERE day=? AND bucket=? AND kind=?",
                         (
-                            actual - allocation["used"],
+                            used - allocation["used"],
                             pending - allocation["held"],
                             op["day"],
                             allocation["bucket"],
@@ -341,7 +345,7 @@ class Store:
                     )
                 await self.db.execute(
                     "UPDATE allocations SET used=?,held=? WHERE operation_id=?",
-                    (actual, pending, operation_id),
+                    (used, pending, operation_id),
                 )
                 await self.db.execute(
                     "UPDATE operations SET actual=?,pending=?,status=?,error=?,updated=? WHERE id=?",

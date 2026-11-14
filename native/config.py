@@ -38,6 +38,7 @@ DEFAULTS = {
     },
     "image": {
         **FEATURE,
+        "require_at_in_group": False,
         "max_outputs": 4,
         "max_references": 16,
         "formats": ["png", "jpeg", "webp", "gif"],
@@ -154,6 +155,8 @@ class Settings:
             for name in ("show_citations", "show_links", "include_raw"):
                 if type(self.data["search"][name]) is not bool:
                     raise ValueError(name)
+            if type(self.data["image"]["require_at_in_group"]) is not bool:
+                raise ValueError("require_at_in_group")
             template = self.data["image"]["acceptance_template"]
             if not isinstance(template, str) or not template.strip() or len(template) > 300:
                 raise ValueError("acceptance_template")
