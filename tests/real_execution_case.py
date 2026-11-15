@@ -75,10 +75,14 @@ class FakeEvent(AstrMessageEvent):
         self.role = "admin" if admin else "member"
         self.sent = []
         self.delivered_files = []
+        self.quota_notices = []
 
     async def send(self, result):
         # Capture the real image_result and resolve its local file exactly as an
         # adapter would, so a URL/thumbnail or a missing file cannot pass.
+        if result.get_plain_text():
+            self.quota_notices.append(result.get_plain_text())
+            return
         self.sent.append(result)
         assert len(result.chain) == 1 and isinstance(result.chain[0], Image)
         component = result.chain[0]
@@ -294,6 +298,7 @@ async def check_image(plugin, event, upstream, data_dir, case):
     assert task["status"] == "succeeded", task
     assert task["generated"] == 1 and task["held"] == 0
     assert task["delivery_status"] == "sent", task
+    assert len(event.quota_notices) == 1 and "剩余 2 张" in event.quota_notices[0]
     artifacts = await plugin.service.get_results(event, task_id)
     assert len(artifacts) == len(event.sent) == len(event.delivered_files) == 1
     artifact = artifacts[0]
@@ -339,17 +344,24 @@ async def check_image(plugin, event, upstream, data_dir, case):
 
 
 async def check_gif_command(plugin, upstream, data_dir):
+    from astrbot.core.message.components import At
     from astrbot.core.pipeline.process_stage.method.star_request import StarRequestSubStage
     from astrbot.core.pipeline.process_stage.stage import ProcessStage
     from astrbot.core.pipeline.scheduler import PipelineScheduler
     from astrbot.core.star.star import star_map
     from astrbot.core.star.star_handler import EventType, star_handlers_registry
 
+    plugin.settings.feature("image")["require_at_in_group"] = True
+    ignored = FakeEvent("other-bot", components=[At(qq="another-bot")], text="/生动图 cat")
+    assert [reply async for reply in plugin.gif_command(ignored)] == []
+    assert not ignored.is_stopped() and not upstream.requests
+    assert not (await plugin.service.available_tools(ignored))["image"]
+    assert all(row["used"] == row["held"] == 0 for row in (await plugin.service.quota(ignored))["image"])
     reference = data_dir / "reference.gif"
     reference.write_bytes(upstream.gif)
     event = FakeEvent(
         "command_gif",
-        components=[Image.fromFileSystem(str(reference))],
+        components=[At(qq="execution-bot"), Image.fromFileSystem(str(reference))],
         text="/生动图 将图片中的鞭子动起来 --帧数 2 --帧时长 30",
     )
     event.trace = SimpleNamespace(record=Mock())

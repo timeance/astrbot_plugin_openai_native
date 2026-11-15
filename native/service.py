@@ -15,7 +15,7 @@ from .assets import AssetStore, atomic_write
 from .capabilities import CapabilityRegistry
 from .config import Settings
 from .diagnostics import Diagnostics, connection_info, runtime_info, safe_error
-from .identity import actor_from_event
+from .identity import actor_from_event, image_trigger_allowed
 from .models import (
     Artifact,
     ImageRequest,
@@ -416,6 +416,8 @@ class NativeService:
     ):
         self._ready()
         actor = actor_from_event(event)
+        if not image_trigger_allowed(event, self.settings.feature("image")["require_at_in_group"]):
+            raise NativeError("mention_required", "群聊生图需在当前消息 @本机器人")
         request = self._image_request(request)
         connection = await self._connection(event, "image")
         if request.output_format == "gif" and connection.protocol != "images":
@@ -709,6 +711,7 @@ class NativeService:
 
     async def get_task(self, event, task_id):
         op = await self._authorized(event, task_id)
+        used = max(op["actual"], op["submitted_count"] - op["pending"]) if op["kind"] == "image" else op["actual"]
         return {
             "task_id": op["id"],
             "kind": op["kind"],
@@ -724,8 +727,8 @@ class NativeService:
             if op["actual"] and len(op["artifacts"]) >= op["actual"]
             else ("partially_saved" if op["artifacts"] else ("unavailable" if op["actual"] else "none")),
             "quota_status": "partially_settled"
-            if op["actual"] and op["pending"]
-            else ("held" if op["pending"] else ("settled" if op["actual"] else "released")),
+            if used and op["pending"]
+            else ("held" if op["pending"] else ("settled" if used else "released")),
             "requested": op["requested"],
             "reference_count": len(op["request"]["assets"]) if op["kind"] == "image" else 0,
             "image_options": op["request"]["options"] if op["kind"] == "image" else None,
@@ -909,6 +912,15 @@ class NativeService:
         actor = actor_from_event(event)
         details = {}
         for feature in ("search", "image"):
+            if feature == "image" and not image_trigger_allowed(
+                event, self.settings.feature("image")["require_at_in_group"]
+            ):
+                details[feature] = {
+                    "ready": False, "configuration_ready": False, "tested": False,
+                    "reason_code": "mention_required", "reason": "群聊生图需在当前消息 @本机器人",
+                }
+                # A message routing decision must not overwrite provider readiness.
+                continue
             try:
                 details[feature] = await self._feature_readiness(event, feature)
             except NativeError as exc:

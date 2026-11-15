@@ -63,7 +63,7 @@
     ["image-prompt", "image", "任务提示与绘图预设", "按名称保存绘图提示词，任务受理回执可单独设置。"],
     ["image-output", "image", "输出约束", ""],
     ["gif", "image", "原生 GIF", "默认关闭。需上游原生 GIF 支持；不会在本地拼接静态帧。"],
-    ["image-quota", "image", "生图每日额度", "命令与自然语言共用每日额度。填写 0 表示不限，图片按张计。"],
+    ["image-quota", "image", "生图每日额度", "命令与自然语言共用每日额度，按已提交的图片张数计，失败也占用。填写 0 表示不限；剩余 2 张及以下时提醒。"],
     ["image-schedule", "image", "生图并发与队列", ""],
     ["storage", "image", "参考图、结果文件与记录保存", "文件大小以字节填写，字段下显示换算。任务记录保留天数不得短于结果文件。"],
     ["image-advanced", "image", "图片连接参数", ""],
@@ -117,6 +117,9 @@
   field("search.show_citations", "向模型提供引用标记", "boolean", "search-display", { hint: "仅控制工具数据，不能强制模型最终回复的格式。" });
   field("search.show_links", "向模型提供来源链接", "boolean", "search-display", { hint: "仅控制工具数据，不能强制模型最终回复包含链接。" });
   field("search.include_raw", "包含上游原始搜索内容", "boolean", "search-display", { hint: "原始内容可能较长，仅在确实需要时开启。" });
+  field("image.require_at_in_group", "群聊仅在 @本机器人时生效", "boolean", "image-connection", {
+    hint: "开启后，群聊的生图、编辑和 GIF 请求须在当前消息 @本机器人；@其他用户或机器人不触发，私聊不受影响。"
+  });
   field("image.acceptance_template", "任务受理回执模板", "text", "image-prompt", {
     wide: true, hint: "可使用 {kind} 和 {task_id}；不能为空，最多 300 字符。"
   });

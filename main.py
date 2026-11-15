@@ -15,7 +15,7 @@ from astrbot.core.agent.tool import ToolSet
 from .native.commands import parse_image_command, quoted_prompt_from_event
 from .native.config import Settings
 from .native.diagnostics import message_info, safe_error
-from .native.identity import actor_from_event
+from .native.identity import actor_from_event, image_trigger_allowed
 from .native.models import Artifact, ImageRequest, NativeError, SearchRequest
 from .native.page import PageAPI
 from .native.service import NativeService
@@ -126,9 +126,37 @@ class OpenAINativePlugin(Star):
         for artifact in artifacts:
             # image_result references the saved original; never decode/re-encode GIF.
             await event.send(event.image_result(artifact.path))
+        warning = await self._image_quota_warning(event)
+        if warning:
+            try:
+                await event.send(event.plain_result(warning))
+            except Exception:
+                self.service.diagnostics.add(event, kind="quota_notice", state="send_failed")
+
+    async def _image_quota_warning(self, event):
+        try:
+            quota = await self.service.quota(event)
+        except Exception:
+            self.service.diagnostics.add(event, kind="quota_notice", state="read_failed")
+            return ""
+        warnings = []
+        for row in quota["image"]:
+            remaining = max(0, row["limit"] - row["used"] - row["held"])
+            if row["limit"] > 0 and remaining <= 2:
+                scope = "本群" if row["scope"] == "group" else "个人"
+                text = f"今日{scope}生图额度剩余 {remaining} 张（上限 {row['limit']} 张"
+                if row["held"]:
+                    text += f"，含处理中预占 {row['held']} 张"
+                warnings.append(text + "）。")
+        return "\n".join(warnings)
 
     async def _deliver_failure(self, event: AstrMessageEvent, result: dict):
-        await event.send(event.plain_result(self._task_message(result)))
+        message = self._task_message(result)
+        if result.get("delivery_status") != "sent":
+            warning = await self._image_quota_warning(event)
+            if warning:
+                message += "\n" + warning
+        await event.send(event.plain_result(message))
 
     async def build_tools(self, event: AstrMessageEvent) -> ToolSet:
         """Return only this plugin's eligible tools, preserving AstrBot permission wrappers."""
@@ -473,6 +501,11 @@ class OpenAINativePlugin(Star):
             "policy_rejected": "本次提示词或参考图被上游内容审核拒绝，请调整内容后再提交。此错误不表示 Key 或模型不可用。",
         }
         suffix = steps.get(exc.category, "")
+        if "gif output is not enabled" in exc.message.lower():
+            suffix = (
+                "上游未为本次请求启用原生 GIF。请让供应商检查模型、渠道和 GIF 权限；"
+                "本地 GIF 开关不能开通上游权限。需要静态图时请改用 /生图 ... --格式 png。"
+            )
         return f"{exc.message}\n{suffix}".strip()
 
     async def _submit_command(self, event, text, *, animated=False):
@@ -492,12 +525,16 @@ class OpenAINativePlugin(Star):
 
     @filter.command("生图")
     async def image_command(self, event: AstrMessageEvent):
+        if not image_trigger_allowed(event, self.settings.feature("image")["require_at_in_group"]):
+            return
         # Resume after delivery so AstrBot can close the handler span before the pipeline stops.
         yield event.plain_result(await self._submit_command(event, self._command_tail(event, "生图")))
         event.stop_event()
 
     @filter.command("生动图")
     async def gif_command(self, event: AstrMessageEvent):
+        if not image_trigger_allowed(event, self.settings.feature("image")["require_at_in_group"]):
+            return
         yield event.plain_result(
             await self._submit_command(event, self._command_tail(event, "生动图"), animated=True)
         )
@@ -586,6 +623,10 @@ class OpenAINativePlugin(Star):
         parts = args.split(maxsplit=1)
         operation = parts[0] if parts else "status"
         remainder = parts[1] if len(parts) > 1 else ""
+        if operation in {"image", "gif"} and not image_trigger_allowed(
+            event, self.settings.feature("image")["require_at_in_group"]
+        ):
+            return
         try:
             actor = actor_from_event(event)
             if operation in {"status", "probe", "retry-download", "reconcile"} and not actor.is_admin:
