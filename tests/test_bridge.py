@@ -844,8 +844,9 @@ async def test_mention_gate_hides_tool_and_blocks_stale_tool_and_public_api(plug
     (5, 1, 0, None), (5, 3, 0, 2), (5, 4, 0, 1), (5, 5, 0, 0),
     (5, 2, 1, 2), (0, 50, 0, None),
 ])
-async def test_delivery_only_warns_when_quota_remaining_is_at_most_two(plugin, limit, used, held, expected):
-    plugin.service.quota.return_value = {"image": [{"scope": "user", "limit": limit, "used": used, "held": held}]}
+@pytest.mark.parametrize("scope,prefix", [("user", ""), ("group", "本群")])
+async def test_delivery_only_warns_when_quota_remaining_is_at_most_two(plugin, limit, used, held, expected, scope, prefix):
+    plugin.service.quota.return_value = {"image": [{"scope": scope, "limit": limit, "used": used, "held": held}]}
     event = Event()
     artifact = Artifact("a", "saved/original.png", "image/png", 123, "hash", 16, 16)
     await plugin._deliver(event, [artifact])
@@ -854,8 +855,7 @@ async def test_delivery_only_warns_when_quota_remaining_is_at_most_two(plugin, l
         assert event.send.await_count == 1
     else:
         assert event.send.await_count == 2
-        assert f"剩余 {expected} 张" in event.send.await_args_list[1].args[0]
-        assert ("预占" in event.send.await_args_list[1].args[0]) is bool(held)
+        assert event.send.await_args_list[1].args[0] == f"{prefix}生图额度剩余 {expected} 张"
 
 
 async def test_quota_warning_failure_cannot_fail_image_delivery(plugin):

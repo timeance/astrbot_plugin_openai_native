@@ -143,11 +143,8 @@ class OpenAINativePlugin(Star):
         for row in quota["image"]:
             remaining = max(0, row["limit"] - row["used"] - row["held"])
             if row["limit"] > 0 and remaining <= 2:
-                scope = "本群" if row["scope"] == "group" else "个人"
-                text = f"今日{scope}生图额度剩余 {remaining} 张（上限 {row['limit']} 张"
-                if row["held"]:
-                    text += f"，含处理中预占 {row['held']} 张"
-                warnings.append(text + "）。")
+                scope = "本群" if row["scope"] == "group" else ""
+                warnings.append(f"{scope}生图额度剩余 {remaining} 张")
         return "\n".join(warnings)
 
     async def _deliver_failure(self, event: AstrMessageEvent, result: dict):
