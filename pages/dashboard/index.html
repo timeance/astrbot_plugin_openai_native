@@ -13,9 +13,7 @@
   <div class="dashboard">
     <header class="page-header">
       <div class="heading">
-        <p class="eyebrow">OPENAI NATIVE</p>
-        <h1>原生能力</h1>
-        <p class="subtitle">搜索与生图，分别配置，统一查看任务和结果。</p>
+        <h1>OpenAI 原生能力</h1>
       </div>
       <div class="header-controls">
         <span id="connection-state" class="badge">连接宿主中</span>
@@ -39,7 +37,7 @@
     </nav>
 
     <main>
-      <div id="notice" class="notice" role="status" aria-live="polite">正在读取配置。诊断日志保存后立即生效，其他配置需手动重载插件。</div>
+      <div id="notice" class="notice" role="status" aria-live="polite">正在读取配置…</div>
       <div class="recovery-actions">
         <button type="button" id="retry-load" class="button small" hidden>重新连接并读取配置</button>
         <button type="button" id="refresh-settings" class="button small" hidden>读取最新配置并保留草稿</button>
@@ -51,7 +49,7 @@
           <legend class="sr-only">插件配置与诊断</legend>
           <section id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview">
             <div class="section-heading">
-              <div><h2>概览</h2><p>搜索与生图独立运行。统计范围为仍保留的任务记录。</p></div>
+              <h2>概览</h2>
               <button type="button" class="button" id="refresh-diagnostics">刷新概览</button>
             </div>
             <div id="diagnostic-status" class="inline-status" role="status">正在读取运行状态…</div>
@@ -101,8 +99,9 @@
           </section>
 
           <section id="panel-search" class="tab-panel" role="tabpanel" aria-labelledby="tab-search" hidden>
-            <div class="section-heading"><div><h2>搜索设置</h2><p>连接、触发、结果长度和每日额度。命令与自然语言调用共用额度。</p></div></div>
+            <div class="section-heading"><h2>搜索设置</h2></div>
             <div id="search-fields"></div>
+            <details class="overview-details" id="search-options"><summary>高级搜索设置</summary><div id="search-options-fields"></div></details>
           </section>
 
           <section id="panel-image" class="tab-panel" role="tabpanel" aria-labelledby="tab-image" hidden>
@@ -118,7 +117,7 @@
         </fieldset>
 
         <footer id="save-bar" class="save-bar" hidden>
-          <div><strong id="draft-state" aria-live="polite">配置未加载</strong><p id="save-hint">诊断日志保存后立即生效；其他配置请手动重载。</p></div>
+          <div><strong id="draft-state" aria-live="polite">配置未加载</strong><p id="save-hint" hidden></p></div>
           <button type="submit" class="button primary" id="save" disabled>保存配置</button>
         </footer>
       </form>
