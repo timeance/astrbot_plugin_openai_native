@@ -54,10 +54,10 @@
   const services = [["auto", "自动识别"], ["openai", "OpenAI"], ["newapi", "NewAPI"], ["sub2api", "Sub2API"], ["unknown", "未知 / 不识别"]];
   const groups = [
     ["diagnostics", "overview", "诊断日志", "默认关闭。保存后立即生效，按总量上限滚动清理最旧日志；关闭后保留已有文件。不保存聊天正文、图片内容或密钥。"],
-    ["search-connection", "search", "搜索连接", "使用当前会话、固定供应商，或独立的手动 API。"],
-    ["search-bounds", "search", "触发与查询", "按需搜索由主代理判断是否需要；明确触发仅响应用户明确的搜索请求。"],
-    ["search-display", "search", "结果摘要与来源信息", "控制提供给模型的搜索内容；最终回复由模型生成。"],
-    ["search-quota", "search", "搜索额度与并发", "命令与自然语言共用每日额度。填写 0 表示不限，搜索按次计。"],
+    ["search-connection", "search", "连接与触发", ""],
+    ["search-bounds", "search", "查询与调用上限", ""],
+    ["search-display", "search", "返回给模型的内容", "引用和链接影响工具结果，不保证最终回复格式。"],
+    ["search-quota", "search", "每日搜索额度", "命令与聊天共用，按次计；0 表示不限。"],
     ["search-advanced", "search", "搜索连接参数", ""],
     ["image-connection", "image", "图片连接", "搜索与图片独立。图片模型不会自动使用聊天模型。"],
     ["image-prompt", "image", "任务提示与绘图预设", "按名称保存绘图提示词，任务受理回执可单独设置。"],
@@ -86,7 +86,7 @@
       hint: name === "image" ? "必须显式填写上游实际可用的图片模型，未填写仍可保存。" : "留空继承所选供应商模型；手动 API 需填写。",
       placeholder: name === "image" ? "尚未配置图片模型" : "留空继承供应商模型"
     });
-    field(name + ".protocol", "接口协议", "select", group, {
+    field(name + ".protocol", "接口协议", "select", name === "search" ? "search-advanced" : group, {
       options: name === "search" ? [["auto", "自动"], ["responses", "Responses 网页搜索"], ["alpha", "Alpha 网页搜索"]]
         : [["auto", "自动（Images）"], ["images", "Images API"], ["responses", "Responses 生图"]],
       hint: name === "image" ? "GIF 需要 Images API；Responses 生图还需要宿主模型。" : "入口品牌不能保证渠道支持该协议。"
@@ -102,8 +102,8 @@
     field(name + ".extra_body", "附加请求体", "json", name + "-advanced", { advanced: true, hint: "JSON 对象；服务端仅使用对应协议允许的参数。" });
     field(name + ".paths", "接口路径覆盖", "json", name + "-advanced", { advanced: true, hint: "JSON 对象，值为本地接口路径，例如 /responses；不得包含完整 URL、查询或路径跳转。", stringValues: true });
   }
-  field("search.trigger_policy", "搜索触发策略", "select", "search-bounds", {
-    options: [["on_demand", "按需搜索"], ["explicit", "仅明确请求搜索"]]
+  field("search.trigger_policy", "何时搜索", "select", "search-connection", {
+    options: [["explicit", "仅在用户要求时"], ["on_demand", "用户要求，或由模型按需决定"]]
   });
   field("search.max_queries", "每次最多查询", "number", "search-bounds", { min: 1, max: 4, unit: "条" });
   field("search.default_results", "默认搜索结果", "number", "search-bounds", { min: 1, max: 10, unit: "条" });
@@ -111,11 +111,11 @@
   field("limits.search_calls_per_message", "后续最多补查", "number", "search-bounds", {
     min: 0, displayOffset: -1, unit: "次", hint: "不含首次搜索；填写 1 表示每条消息最多搜索 2 次。"
   });
-  field("search.max_tool_calls", "单次上游工具调用上限", "number", "search-bounds", { min: 1, unit: "次", hint: "限制一次搜索请求中的上游工具调用。" });
+  field("search.max_tool_calls", "单次上游工具调用上限", "number", "search-bounds", { min: 1, unit: "次" });
   field("search.snippet_chars", "每条结果摘要上限", "number", "search-display", { min: 1, unit: "字符" });
   field("search.response_chars", "搜索回应总预算", "number", "search-display", { min: 100, unit: "字符" });
-  field("search.show_citations", "向模型提供引用标记", "boolean", "search-display", { hint: "仅控制工具数据，不能强制模型最终回复的格式。" });
-  field("search.show_links", "向模型提供来源链接", "boolean", "search-display", { hint: "仅控制工具数据，不能强制模型最终回复包含链接。" });
+  field("search.show_citations", "附带引用标记", "boolean", "search-display");
+  field("search.show_links", "附带来源链接", "boolean", "search-display");
   field("search.include_raw", "包含上游原始搜索内容", "boolean", "search-display", { hint: "原始内容可能较长，仅在确实需要时开启。" });
   field("image.require_at_in_group", "群聊仅在 @本机器人时生效", "boolean", "image-connection", {
     hint: "开启后，群聊的生图、编辑和 GIF 请求须在当前消息 @本机器人；@其他用户或机器人不触发，私聊不受影响。"
@@ -140,14 +140,14 @@
   field("limits.timezone", "每日重置时区", "text", "quota", { placeholder: "UTC", hint: "IANA 时区，例如 Asia/Shanghai、Asia/Hong_Kong 或 UTC。" });
   for (const [prefix, title, unit] of [["search", "搜索", "次/日"], ["image", "图片", "张/日"]]) {
     for (const [scope, label] of [["user", "用户"], ["group", "群组"], ["private", "私聊"]]) {
-      field("limits." + scope + "_" + prefix, label + title + "额度", "number", prefix + "-quota", { min: 0, unit, hint: "0 表示不限。" });
+      field("limits." + scope + "_" + prefix, label + title + "额度", "number", prefix + "-quota", { min: 0, unit });
     }
   }
   field("limits.admin_exempt", "管理员免除每日额度", "boolean", "quota", { hint: "仅影响额度，不代表上游免费。" });
   for (const [key, label, unit] of [
     ["search_concurrency", "搜索并发", "个"], ["image_concurrency", "图片并发", "个"],
     ["queue_size", "图片队列容量", "个任务"], ["user_image_concurrency", "单用户图片并发", "个"]
-  ]) field("limits." + key, label, "number", key === "search_concurrency" ? "search-quota" : "image-schedule", { min: 1, unit });
+  ]) field("limits." + key, label, "number", key === "search_concurrency" ? "search-bounds" : "image-schedule", { min: 1, unit });
   field("limits.min_interval_seconds", "用户请求最小间隔", "number", "schedule", { min: 0, integer: false, unit: "秒" });
   for (const [key, label, unit] of [
     ["reference_ttl_seconds", "近期参考图缓存", "秒"], ["artifact_days", "结果文件保留", "天"],
@@ -184,6 +184,7 @@
     return text.slice(0, max);
   }
   function showNotice(message, kind = "") {
+    $("notice").hidden = !message;
     $("notice").textContent = message;
     $("notice").className = "notice" + (kind ? " " + kind : "");
   }
@@ -206,8 +207,7 @@
     if (group) showTab(group[1]);
     const control = controls.get(path) || sourceControls.get(path.split(".")[0]);
     if (!control) return;
-    const details = control.wrapper.closest("details");
-    if (details) details.open = true;
+    for (let parent = control.wrapper.closest("details"); parent; parent = parent.parentElement.closest("details")) parent.open = true;
     control.input.focus();
   }
 
@@ -335,7 +335,8 @@
         details.append(grid);
         section.append(details);
       }
-      $(tab + "-fields").append(section);
+      const folded = ["search-bounds", "search-display", "search-advanced"].includes(id);
+      $(folded ? "search-options-fields" : tab + "-fields").append(section);
     }
   }
   function refreshSources() {
@@ -564,7 +565,9 @@
     $("draft-state").textContent = state.saving ? "正在保存…" : count ? "尚未保存 · " + count + " 项变更" : "草稿与已保存配置一致";
     $("save").disabled = !count || state.saving || state.loading || state.conflict;
     $("save").textContent = state.saving ? "正在保存…" : "保存配置";
-    $("save-hint").textContent = result.errors.size ? "存在 " + result.errors.size + " 项输入错误，请修正后保存。" : "诊断日志保存后立即生效；其他配置请在插件管理中手动重载。";
+    const needsReload = result.dirty.some((path) => !path.startsWith("diagnostics."));
+    $("save-hint").textContent = result.errors.size ? "请修正 " + result.errors.size + " 项输入错误。" : needsReload ? "保存后需手动重载插件。" : "";
+    $("save-hint").hidden = !$("save-hint").textContent;
     const summary = $("validation-summary");
     if (summary.dataset.revealed === "true") renderValidation(result.errors);
     updateSaveBar(count);
@@ -628,6 +631,7 @@
   const statuses = {
     available: ["实测通过", "good"], auth_blocked: ["认证或权限受限", "bad"],
     started: ["已开始", ""], error: ["执行错误", "bad"],
+    needs_subject: ["待确定主题", ""], permission_denied: ["无搜索权限", "warn"],
     verified: ["已验证", "good"], supported: ["实测通过", "good"], passed: ["实测通过", "good"],
     unverified: ["尚未实测", ""], unknown: ["尚未实测", ""],
     unsupported: ["明确不支持", "bad"], temporary_failure: ["临时失败", "warn"],
@@ -664,7 +668,7 @@
       heading.append(element("h3", "", title));
       if (!feature) heading.append(badge("状态未读取"));
       else if (feature.reason_code === "awaiting_session") heading.append(badge("等待会话验证", "warn"));
-      else heading.append(badge(feature.configuration_ready === true ? "配置就绪" : "配置未就绪", feature.configuration_ready ? "good" : "warn"));
+      else heading.append(badge(feature.ready ? "可尝试调用" : "未就绪", feature.ready ? "good" : "warn"));
       card.append(heading);
       const metrics = element("div", "feature-metrics");
       const summary = state.summary?.[name];
@@ -674,6 +678,8 @@
         metrics.append(metric);
       }
       card.append(metrics);
+      const technical = element("details", "record-details");
+      technical.append(element("summary", "", "连接与能力详情"));
       const lines = element("div", "state-lines");
       const selectedMode = feature?.mode || get(state.snapshot?.active_values, name + ".mode");
       lines.append(stateLine("连接来源", selectedMode === "current" ? "当前会话" : selectedMode === "manual" ? "手动 API" : selectedMode === "provider" ? "固定供应商" : "未提供"));
@@ -685,10 +691,10 @@
       if (feature?.protocol) lines.append(stateLine("运行协议", safeText(feature.protocol, 50)));
       if (feature?.host_model) lines.append(stateLine("宿主模型", safeText(feature.host_model, 100)));
       if (feature?.observed_at) lines.append(stateLine("记录时间", formatTime(feature.observed_at)));
-      card.append(lines);
+      technical.append(lines);
       if (feature?.reason) card.append(element("p", "readiness-reason", safeText(feature.reason)));
-      if (feature?.formats?.length) card.append(element("p", "hint", "可尝试格式：" + feature.formats.map((value) => safeText(value, 20)).join("、")));
-      if (feature?.actions?.length) card.append(element("p", "hint", "可尝试操作：" + feature.actions.map((value) => value === "generate" ? "生成" : value === "edit" ? "编辑" : safeText(value, 30)).join("、")));
+      if (feature?.formats?.length) technical.append(element("p", "hint", "可尝试格式：" + feature.formats.map((value) => safeText(value, 20)).join("、")));
+      if (feature?.actions?.length) technical.append(element("p", "hint", "可尝试操作：" + feature.actions.map((value) => value === "generate" ? "生成" : value === "edit" ? "编辑" : safeText(value, 30)).join("、")));
       if (feature?.error) {
         const details = element("details", "record-details");
         details.append(element("summary", "", "配置检查错误"));
@@ -712,8 +718,9 @@
             details.append(dl); list.append(details);
           }
         }
-        card.append(list);
+        technical.append(list);
       }
+      card.append(technical);
       const actions = element("div", "feature-actions");
       const settings = element("button", "button", name === "search" ? "搜索设置" : "生图设置");
       settings.type = "button"; settings.addEventListener("click", () => showTab(name, true));
@@ -811,7 +818,7 @@
       if (!record || typeof record !== "object") continue;
       const tr = element("tr");
       tr.append(element("td", "", formatTime(record.time)));
-      const stages = { request: "模型请求", hook: "工具筛选", execution: "工具执行", tool_execution: "工具执行", tool: "工具执行", result: "执行结果", readiness: "就绪检查", message: "消息与命令匹配", reference_cache: "参考图读取", runtime: "运行版本" };
+      const stages = { request: "模型请求", search_intent: "明确搜索请求", hook: "工具筛选", execution: "工具执行", tool_execution: "工具执行", tool: "工具执行", result: "执行结果", readiness: "就绪检查", message: "消息与命令匹配", reference_cache: "参考图读取", runtime: "运行版本" };
       tr.append(element("td", "", safeText(record.tool || stages[record.kind] || record.kind || "调用记录", 100)));
       const outcome = element("td");
       if (record.state || record.status) outcome.append(statusBadge(record.state || record.status));
@@ -878,7 +885,7 @@
       const result = await request("POST", "tasks/query", { offset: 0, limit: 1, kind: "all", status: "all" });
       if (!result?.summary) throw new Error("invalid_summary");
       state.summary = result.summary;
-      $("summary-status").textContent = "任务统计已更新，含命令与自然语言调用。";
+      $("summary-status").textContent = "";
       renderReadiness();
     } catch {
       $("summary-status").textContent = "任务统计读取失败，可点击刷新概览重试。已有统计保留。";
@@ -1094,7 +1101,7 @@
       $("refresh-settings").hidden = true;
       $("connection-state").textContent = "已连接 AstrBot";
       $("connection-state").className = "badge good";
-      showNotice(preserve ? "已读取最新配置并保留草稿。请核对未保存项，再点击保存；此操作没有提交修改。" : "配置已加载。诊断日志保存后立即生效；其他配置需手动重载。", preserve ? "warning" : "");
+      showNotice(preserve ? "已保留草稿，请核对后保存。" : state.snapshot.needs_reload ? "已保存的配置待重载。" : "", preserve || state.snapshot.needs_reload ? "warning" : "");
     } catch {
       showNotice("配置读取失败，已有草稿保持不变。请检查宿主连接与插件接口后重试。", "error");
       $("retry-load").hidden = false;

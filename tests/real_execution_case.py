@@ -40,6 +40,7 @@ from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform_metadata import PlatformMetadata
+from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.provider.func_tool_manager import FunctionToolManager, _PermissionGuardedTool
 from astrbot.core.provider.register import llm_tools
 from astrbot.core.star.context import Context
@@ -118,7 +119,7 @@ class Upstream:
         assert request.method == "POST", f"Unexpected HTTP request: {request.method} {request.url}"
         assert request.url.host == "upstream.example.test"
         assert request.headers["authorization"] == "Bearer execution-test-key"
-        if request.url.path == "/v1/responses" and self.case in {"search", "persona_permissions"}:
+        if request.url.path == "/v1/responses" and self.case in {"search", "chat_search", "persona_permissions"}:
             return httpx.Response(
                 200,
                 json={
@@ -449,6 +450,22 @@ async def check_persona_permissions(plugin, upstream):
     await check_search(plugin, partial_event, upstream, tools=partial_tools)
 
 
+async def check_chat_search(plugin, upstream):
+    await sp.global_put("tool_permissions", {"_default": {"openai_web_search": "admin"}})
+    for admin in (False, True):
+        event = FakeEvent("chat-search-" + str(admin), admin=admin, text="搜索AstrBot executor")
+        event.is_at_or_wake_command = True
+        req = ProviderRequest(prompt=event.get_message_str(), func_tool=plugin.context.get_llm_tool_manager().get_full_tool_set())
+        await plugin.on_llm_request(event, req)
+        await plugin.on_llm_request(event, req)
+        assert not req.func_tool.get_tool("openai_web_search")
+        message = await req.assemble_context()
+        assert message["role"] == "user"
+        assert len(req.extra_user_content_parts) == 1
+        assert ("Official documentation" if admin else "没有网页搜索权限") in message["content"][-1]["text"]
+        assert len(upstream.requests) == int(admin)
+
+
 async def run(case, data_dir):
     upstream = Upstream(case)
     settings = bridge.Settings(
@@ -521,6 +538,8 @@ async def run(case, data_dir):
             await check_gif_command(plugin, upstream, data_dir)
         elif case == "persona_permissions":
             await check_persona_permissions(plugin, upstream)
+        elif case == "chat_search":
+            await check_chat_search(plugin, upstream)
         elif case == "search":
             await check_search(plugin, FakeEvent(case, text="请搜索 AstrBot executor"), upstream)
         else:

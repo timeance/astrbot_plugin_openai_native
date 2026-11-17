@@ -61,6 +61,9 @@ class Event:
     def get_message_str(self):
         return self.text
 
+    def get_messages(self):
+        return []
+
     def get_extra(self, name):
         return self.extra.get(name)
 
@@ -118,6 +121,8 @@ def bridge(monkeypatch):
     module("astrbot.core")
     module("astrbot.core.agent")
     module("astrbot.core.agent.tool", ToolSet=ToolSet)
+    module("astrbot.core.agent.run_context", ContextWrapper=SimpleNamespace)
+    module("astrbot.core.astr_agent_context", AstrAgentContext=SimpleNamespace)
     package = module("_bridge_contract")
     package.__path__ = [str(ROOT)]
     native = module("_bridge_contract.native")
@@ -513,6 +518,37 @@ async def test_explicit_policy_only_gates_llm_tool(plugin):
     event.text = "/onative search concept"
     assert json.loads(await plugin.web_search(event, ["concept"]))["status"] == "succeeded"
     assert plugin.service.search.await_count == 2
+
+
+@pytest.mark.parametrize(("text", "addressed", "history", "calls", "offered"), [
+    ("帮我搜索 AstrBot 更新", True, False, ["AstrBot 更新"], False),
+    ("搜索AstrBot 更新", True, False, ["AstrBot 更新"], False),
+    ("搜索AstrBot 更新", False, False, [], False),
+    ("不要搜索", True, False, [], False),
+    ("搜索功能怎么用", True, False, [], False),
+    ("在聊天记录里搜索 AstrBot", True, True, [], False),
+    ("今天有什么新闻", True, False, [], True),
+    ("帮我搜索", True, False, [], False),
+    ("帮我搜索", True, True, [], True),
+])
+async def test_chat_search_routing(plugin, text, addressed, history, calls, offered):
+    plugin.settings = Settings({"search": {"trigger_policy": "on_demand"}})
+    plugin.context = object()
+    plugin.service.available_tools.return_value = {"search": True}
+    event = Event(text=text)
+    event.is_at_or_wake_command = addressed
+    tool = Tool("openai_web_search", {"properties": {"queries": {}, "max_results": {}, "recency": {}}})
+    tool.call = AsyncMock(return_value='{"status":"succeeded","sources":[]}')
+    req = SimpleNamespace(func_tool=ToolSet([tool]), extra_user_content_parts=[], contexts=[{}] if history else [])
+    await plugin.on_llm_request(event, req)
+    assert [call.kwargs["queries"][0] for call in tool.call.await_args_list] == calls
+    assert bool(req.func_tool.tools) == offered
+    assert not plugin.service.search.called  # never bypass the tool's permission wrapper
+    if calls or text == "帮我搜索":
+        assert len(req.extra_user_content_parts) == 1 and req.extra_user_content_parts[0]["_no_save"]
+        await plugin.on_llm_request(event, req)
+        assert tool.call.await_count == len(calls) and len(req.extra_user_content_parts) == 1
+        assert text not in json.dumps(plugin.service.diagnostics.snapshot(), ensure_ascii=False)
 
 
 async def test_explicit_zero_frame_is_forwarded_for_service_validation(plugin):

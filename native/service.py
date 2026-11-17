@@ -968,6 +968,8 @@ class NativeService:
                 reasons[name] = {"code": "not_in_request", "message": "未进入当前请求，请检查人格和工具开关"}
             elif name in inactive:
                 reasons[name] = {"code": "inactive", "message": "AstrBot 已停用此工具"}
+            elif name == "openai_web_search" and available.get("search_hidden"):
+                reasons[name] = {"code": "search_routing", "message": available["search_hidden"]}
             elif name not in after:
                 detail = available.get("details", {}).get(feature, {})
                 reasons[name] = {
