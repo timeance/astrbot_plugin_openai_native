@@ -71,6 +71,8 @@ Alpha 需要相应渠道支持；Images 需要可用的 Images 渠道。直接 C
 
 `extra_body` 只适用于对应接口允许的扩展字段；不能覆盖身份、模型绑定或受保护请求字段。不要把聊天的 temperature、messages 等直接复制给 Images。
 
+Alpha 搜索的请求体固定为 `id`、`model` 和 `commands`。供应商或插件配置的 `extra_body` 仅在其他支持附加参数的协议中生效，因此同一供应商可以同时用于配置了 `reasoning_effort` 的聊天和 Alpha 搜索。
+
 ## 群聊 @触发
 
 `image.require_at_in_group` 默认 `false`，在“生图设置 → 图片连接”编辑。开启后，静态图、编辑和 GIF 的命令、自然语言工具及公共 API 提交均须在当前群消息中真正 @本机器人。只 @其他人或其他 bot、@全体、文字昵称、引用 bot 消息均不满足；可以同时 @本机器人和需要参考头像的用户。私聊、搜索和已有任务管理不受影响。保存后重新加载插件。
