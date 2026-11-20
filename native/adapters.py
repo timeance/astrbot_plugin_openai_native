@@ -185,15 +185,14 @@ class SearchAdapter:
             if request.domains:
                 entry["domains"] = list(request.domains)
             commands.append(entry)
-        body = _extra(conn, {"id", "model", "commands", "response_length"})
-        body.update(
-            id=operation_id,
-            model=conn.model,
-            commands={
+        body = {
+            "id": operation_id,
+            "model": conn.model,
+            "commands": {
                 "search_query": commands,
                 "response_length": "short" if request.max_results <= 5 else "long",
             },
-        )
+        }
         payload = await self.transport.post(conn, "alpha_search", body)
         # openai/codex SearchResponse: output: String, results: Option<Vec<JsonValue>>.
         # Some gateways also return a map; its entries are still opaque DTOs.

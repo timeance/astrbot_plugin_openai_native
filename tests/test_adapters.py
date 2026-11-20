@@ -72,7 +72,13 @@ async def test_alpha_request_and_structured_sources_are_preserved():
     conn = connection(
         protocol="alpha",
         model="search-model",
-        extra_body={"commands": {"bad": True}, "model": "wrong", "response_length": "wrong"},
+        extra_body={
+            "commands": {"bad": True},
+            "model": "wrong",
+            "response_length": "wrong",
+            "reasoning_effort": "xhigh",
+            "temperature": 0.7,
+        },
     )
     request = SearchRequest(["query one", "query two"], max_results=3, recency=7, domains=["example.org"])
     result = await SearchAdapter(transport, Settings({"search": {"max_queries": 2}})).search(
