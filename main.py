@@ -97,7 +97,7 @@ def filter_tool_set(original: ToolSet, available: dict, settings: Settings) -> T
     PLUGIN_NAME,
     "OpenAI Native contributors",
     "OpenAI 原生搜索、生图、编辑和 GIF",
-    "0.1.4",
+    "0.1.5",
     "https://github.com/timeance/astrbot_plugin_openai_native",
 )
 class OpenAINativePlugin(Star):
