@@ -53,23 +53,23 @@
   };
   const services = [["auto", "自动识别"], ["openai", "OpenAI"], ["newapi", "NewAPI"], ["sub2api", "Sub2API"], ["unknown", "未知 / 不识别"]];
   const groups = [
-    ["diagnostics", "overview", "诊断日志", "默认关闭。保存后立即生效，按总量上限滚动清理最旧日志；关闭后保留已有文件。不保存聊天正文、图片内容或密钥。"],
+    ["diagnostics", "overview", "诊断日志", "默认关闭，保存后立即生效，超限时自动清理最旧日志；关闭后保留已有文件，不记录聊天正文、图片内容或密钥。"],
     ["search-connection", "search", "连接与触发", ""],
     ["search-bounds", "search", "查询与调用上限", ""],
-    ["search-display", "search", "返回给模型的内容", "引用和链接影响工具结果，不保证最终回复格式。"],
+    ["search-display", "search", "返回给模型的内容", "仅控制工具返回给模型的数据，不强制约束模型最终回复的格式。"],
     ["search-quota", "search", "每日搜索额度", "命令与聊天共用，按次计；0 表示不限。"],
     ["search-advanced", "search", "搜索连接参数", ""],
-    ["image-connection", "image", "图片连接", "搜索与图片独立。图片模型不会自动使用聊天模型。"],
+    ["image-connection", "image", "图片连接", "生图与搜索独立配置；生图不会自动沿用聊天模型，需显式填写图片模型 ID。"],
     ["image-prompt", "image", "任务提示与绘图预设", "按名称保存绘图提示词，任务受理回执可单独设置。"],
     ["image-output", "image", "输出约束", ""],
-    ["gif", "image", "原生 GIF", "默认关闭。需上游原生 GIF 支持；不会在本地拼接静态帧。"],
+    ["gif", "image", "原生 GIF", "默认关闭，需上游支持原生 GIF 接口（不会在本地拼接静态帧）。"],
     ["image-quota", "image", "生图每日额度", "命令与自然语言共用每日额度，按已提交的图片张数计，失败也占用。填写 0 表示不限；剩余 2 张及以下时提醒。"],
     ["image-schedule", "image", "生图并发与队列", ""],
-    ["storage", "image", "参考图、结果文件与记录保存", "文件大小以字节填写，字段下显示换算。任务记录保留天数不得短于结果文件。"],
+    ["storage", "image", "参考图、结果文件与记录保存", "文件大小按字节填写，输入框下方会显示换算结果；任务记录保留天数不可短于结果文件。"],
     ["image-advanced", "image", "图片连接参数", ""],
     ["quota", "advanced", "共用额度规则", "每日边界按所选时区计算。"],
     ["schedule", "advanced", "共用请求频率", ""],
-    ["network", "advanced", "下载与网络", "私有下载主机仅在确实需要时放行，按主机填写。"]
+    ["network", "advanced", "下载与网络", "私有网络下载主机仅在确需访问内网地址时按主机名放行。"]
   ];
 
   for (const name of ["search", "image"]) {
@@ -83,19 +83,19 @@
     });
     field(name + ".keys", "替换 API 密钥", "secret", group, { when: () => mode(name) === "manual" });
     field(name + ".model", name === "image" ? "图片模型 ID" : "搜索模型 ID", "text", group, {
-      hint: name === "image" ? "必须显式填写上游实际可用的图片模型，未填写仍可保存。" : "留空继承所选供应商模型；手动 API 需填写。",
+      hint: name === "image" ? "必填，填写上游实际支持的图片模型 ID（留空时生图不可用，但可先保存其他项）。" : "留空则继承所选供应商模型；手动配置模式需明确填写。",
       placeholder: name === "image" ? "尚未配置图片模型" : "留空继承供应商模型"
     });
     field(name + ".protocol", "接口协议", "select", name === "search" ? "search-advanced" : group, {
       options: name === "search" ? [["auto", "自动"], ["responses", "Responses 网页搜索"], ["alpha", "Alpha 网页搜索"]]
         : [["auto", "自动（Images）"], ["images", "Images API"], ["responses", "Responses 生图"]],
-      hint: name === "image" ? "GIF 需要 Images API；Responses 生图还需要宿主模型。" : "入口品牌不能保证渠道支持该协议。"
+      hint: name === "image" ? "原生 GIF 使用 Images API。Responses 生图可沿用供应商的宿主模型，手动配置时须填写。" : "请确认所选渠道支持此协议。"
     });
     field(name + ".host_model", "Responses 宿主模型", "text", name === "image" ? group : name + "-advanced", {
       when: () => controlValue(name + ".protocol") === "responses",
       hint: "留空时可继承所选供应商的聊天模型；手动 API 需明确配置。"
     });
-    field(name + ".service_type", "入口服务类型", "select", name + "-advanced", { options: services, hint: "只覆盖服务识别；不会证明账号或渠道支持某项能力。" });
+    field(name + ".service_type", "入口服务类型", "select", name + "-advanced", { options: services, hint: "仅用于指定入口服务类型，实际可用能力仍取决于上游渠道与账号权限。" });
     field(name + ".proxy", "代理地址", "text", name + "-advanced", { hint: "留空继承供应商设置；支持完整环境变量引用。", placeholder: "留空继承" });
     field(name + ".timeout", "请求超时", "number", name + "-advanced", { min: 0, integer: false, unit: "秒", hint: "0 表示继承供应商超时；无可继承值时使用服务默认值。" });
     field(name + ".headers", "附加请求头", "json", name + "-advanced", { advanced: true, hint: "JSON 对象。认证头由连接管理，不在此覆盖；优先使用环境变量引用。", stringValues: true });
@@ -118,7 +118,7 @@
   field("search.show_links", "附带来源链接", "boolean", "search-display");
   field("search.include_raw", "包含上游原始搜索内容", "boolean", "search-display", { hint: "原始内容可能较长，仅在确实需要时开启。" });
   field("image.require_at_in_group", "群聊仅在 @本机器人时生效", "boolean", "image-connection", {
-    hint: "开启后，群聊的生图、编辑和 GIF 请求须在当前消息 @本机器人；@其他用户或机器人不触发，私聊不受影响。"
+    hint: "开启后，群聊中的生图、改图与 GIF 请求须在当前消息中真正 @本机器人；仅 @他人或不 @ 均不触发，私聊不受影响。"
   });
   field("image.acceptance_template", "任务受理回执模板", "text", "image-prompt", {
     wide: true, hint: "可使用 {kind} 和 {task_id}；不能为空，最多 300 字符。"
@@ -143,7 +143,7 @@
       field("limits." + scope + "_" + prefix, label + title + "额度", "number", prefix + "-quota", { min: 0, unit });
     }
   }
-  field("limits.admin_exempt", "管理员免除每日额度", "boolean", "quota", { hint: "仅影响额度，不代表上游免费。" });
+  field("limits.admin_exempt", "管理员免除每日额度", "boolean", "quota", { hint: "开启后管理员免除每日额度限制。并发和队列限制仍生效，上游照常计费。" });
   for (const [key, label, unit] of [
     ["search_concurrency", "搜索并发", "个"], ["image_concurrency", "图片并发", "个"],
     ["queue_size", "图片队列容量", "个任务"], ["user_image_concurrency", "单用户图片并发", "个"]

@@ -1,10 +1,9 @@
 name: astrbot_plugin_openai_native
 display_name: OpenAI 原生能力
-short_desc: 在聊天中搜索网页、生成图片，或按要求修改参考图。
+short_desc: 为 AstrBot 接入 OpenAI 原生网页搜索、AI 生图、改图与原生 GIF。
 desc: >-
-  用户可以在聊天中要求 AstrBot 搜索网页、用命令画图，或引用图片要求修改。
-  搜索和生图可分别选择供应商，管理员可设置个人和群组额度，在任务列表和图库查看结果。
-  使用支持原生 GIF 的上游时，还可开启动图生成。
+  支持在聊天中通过自然语言或命令搜索网页、生成图片、编辑参考图，上游支持时还可生成原生 GIF 动图。
+  搜索与生图可分别绑定供应商或手动配置独立 API；内置个人/群组每日额度、后台任务队列、图库管理与诊断日志。
 version: v0.1.5
 author: OpenAI Native contributors
 repo: https://github.com/timeance/astrbot_plugin_openai_native

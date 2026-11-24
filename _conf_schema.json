@@ -5,7 +5,7 @@
     "items": {
       "enabled": {
         "type": "bool",
-        "description": "启用",
+        "description": "启用网页搜索",
         "default": true
       },
       "mode": {
@@ -17,7 +17,7 @@
           "provider",
           "manual"
         ],
-        "hint": "当前会话：使用本次会话供应商；指定供应商：使用下拉所选供应商；手动配置：请在插件页面设置 API 地址与密钥。",
+        "hint": "当前会话供应商：沿用当前会话所选供应商；指定供应商：固定使用下方所选供应商；手动配置：在插件控制台填写 API 地址与密钥。",
         "labels": [
           "当前会话供应商",
           "指定供应商",
@@ -26,10 +26,10 @@
       },
       "provider_id": {
         "type": "string",
-        "description": "绑定 AstrBot 供应商",
+        "description": "指定 AstrBot 供应商",
         "default": "",
         "_special": "select_provider",
-        "hint": "选择已有供应商；仅“指定供应商”模式使用。",
+        "hint": "仅在「指定供应商」模式下生效，从已有供应商中选择。",
         "condition": {
           "mode": "provider"
         }
@@ -45,14 +45,14 @@
         "description": "手动 API Key 列表",
         "default": [],
         "secret": true,
-        "hint": "仅手动模式使用。每项是 Key 或完整 $NAME / ${NAME} 环境变量引用；不要贴到聊天。",
+        "hint": "仅手动配置模式生效。可填明文 Key 或 $NAME / ${NAME} / env:NAME 环境变量引用，切勿在聊天中发送。",
         "invisible": true
       },
       "model": {
         "type": "string",
         "description": "搜索模型 ID",
         "default": "",
-        "hint": "留空继承所选供应商模型；手动 API 需填写搜索宿主模型。"
+        "hint": "留空则继承所选供应商模型；手动配置模式需明确填写支持搜索的模型 ID。"
       },
       "host_model": {
         "type": "string",
@@ -92,7 +92,7 @@
       },
       "timeout": {
         "type": "int",
-        "description": "请求超时（秒，0 复用供应商）",
+        "description": "请求超时（秒，0 沿用供应商）",
         "default": 0,
         "invisible": true
       },
@@ -100,21 +100,21 @@
         "type": "dict",
         "description": "附加请求头",
         "default": {},
-        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。",
+        "hint": "请填写 JSON 对象（如 {\"X-Custom\": \"value\"}），勿将整个对象包成字符串。",
         "invisible": true
       },
       "extra_body": {
         "type": "dict",
         "description": "附加请求体",
         "default": {},
-        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。",
+        "hint": "用 JSON 对象填写所选接口允许的扩展字段。Alpha Search 使用固定请求体。",
         "invisible": true
       },
       "paths": {
         "type": "dict",
         "description": "接口路径覆盖",
         "default": {},
-        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。",
+        "hint": "用 JSON 对象指定接口路径，如 {\"responses\": \"/v1/responses\"}。",
         "invisible": true
       },
       "max_queries": {
@@ -171,14 +171,14 @@
         "type": "bool",
         "description": "向模型提供引用标记",
         "default": false,
-        "hint": "仅控制工具数据，不能强制模型最终回复的格式。",
+        "hint": "仅控制工具返回给模型的数据，不强制约束模型最终回复的排版格式。",
         "invisible": true
       },
       "show_links": {
         "type": "bool",
         "description": "向模型提供来源链接",
         "default": false,
-        "hint": "仅控制工具数据，不能强制模型最终回复包含链接。",
+        "hint": "仅控制工具返回给模型的数据，不强制约束模型最终回复必须输出链接。",
         "invisible": true
       },
       "include_raw": {
@@ -195,7 +195,7 @@
     "items": {
       "enabled": {
         "type": "bool",
-        "description": "启用",
+        "description": "启用图片生成与编辑",
         "default": true
       },
       "mode": {
@@ -207,7 +207,7 @@
           "provider",
           "manual"
         ],
-        "hint": "当前会话：使用本次会话供应商；指定供应商：使用下拉所选供应商；手动配置：请在插件页面设置 API 地址与密钥。",
+        "hint": "当前会话供应商：沿用当前会话所选供应商；指定供应商：固定使用下方所选供应商；手动配置：在插件控制台填写 API 地址与密钥。",
         "labels": [
           "当前会话供应商",
           "指定供应商",
@@ -216,10 +216,10 @@
       },
       "provider_id": {
         "type": "string",
-        "description": "绑定 AstrBot 供应商",
+        "description": "指定 AstrBot 供应商",
         "default": "",
         "_special": "select_provider",
-        "hint": "选择已有供应商；仅“指定供应商”模式使用。",
+        "hint": "仅在「指定供应商」模式下生效，从已有供应商中选择。",
         "condition": {
           "mode": "provider"
         }
@@ -235,20 +235,20 @@
         "description": "手动 API Key 列表",
         "default": [],
         "secret": true,
-        "hint": "仅手动模式使用。每项是 Key 或完整 $NAME / ${NAME} 环境变量引用；不要贴到聊天。",
+        "hint": "仅手动配置模式生效。可填明文 Key 或 $NAME / ${NAME} / env:NAME 环境变量引用，切勿在聊天中发送。",
         "invisible": true
       },
       "model": {
         "type": "string",
         "description": "图片模型 ID（必填）",
         "default": "",
-        "hint": "请填写上游实际可用的图片模型；留空时生图尚未就绪。Responses 生图另需宿主模型。"
+        "hint": "填写上游支持的图片模型 ID 后才能生图。留空时仍可先保存其他设置。"
       },
       "host_model": {
         "type": "string",
         "description": "Responses 宿主模型",
         "default": "",
-        "hint": "仅 Responses 生图使用；协议等高级选项在插件页面设置。",
+        "hint": "用于 Responses 生图。留空时使用所选供应商的模型，手动配置时须填写。",
         "condition": {
           "protocol": "responses"
         }
@@ -285,7 +285,7 @@
       },
       "timeout": {
         "type": "int",
-        "description": "请求超时（秒，0 复用供应商）",
+        "description": "请求超时（秒，0 沿用供应商）",
         "default": 0,
         "invisible": true
       },
@@ -293,21 +293,21 @@
         "type": "dict",
         "description": "附加请求头",
         "default": {},
-        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。",
+        "hint": "请填写 JSON 对象（如 {\"X-Custom\": \"value\"}），勿将整个对象包成字符串。",
         "invisible": true
       },
       "extra_body": {
         "type": "dict",
         "description": "附加请求体",
         "default": {},
-        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。",
+        "hint": "用 JSON 对象填写所选生图接口允许的扩展字段。",
         "invisible": true
       },
       "paths": {
         "type": "dict",
         "description": "接口路径覆盖",
         "default": {},
-        "hint": "AstrBot 原生字典编辑器。保存为 JSON 对象；嵌套值使用 JSON 类型，不要把整个对象保存成字符串。",
+        "hint": "用 JSON 对象指定接口路径，如 {\"generations\": \"/v1/images/generations\"}。",
         "invisible": true
       },
       "max_outputs": {
@@ -335,7 +335,7 @@
       },
       "sizes": {
         "type": "list",
-        "description": "允许尺寸（空列表由模型决定）",
+        "description": "允许的输出尺寸（空列表表示不限制可选尺寸）",
         "default": [],
         "invisible": true
       },
@@ -367,21 +367,21 @@
         "type": "bool",
         "description": "群聊仅在 @本机器人时生效",
         "default": false,
-        "hint": "群聊的生图、编辑和 GIF 请求须在当前消息 @本机器人；@其他用户、@全体或引用机器人消息均不满足。私聊不受影响。",
+        "hint": "开启后，群聊中的生图、改图与 GIF 请求须在当前消息中真正 @本机器人（@他人、@全体或引用消息均不满足）；私聊不受影响。",
         "invisible": true
       },
       "acceptance_template": {
         "type": "string",
         "description": "任务受理回执模板",
         "default": "已接受{kind}任务，{task_id}",
-        "hint": "可使用 {kind} 和 {task_id}；不能为空，最多 300 字符。",
+        "hint": "固定命令受理时的提示模板，支持 {kind} 与 {task_id} 占位符；不能为空，最多 300 字符。",
         "invisible": true
       },
       "presets": {
         "type": "dict",
         "description": "绘图预设名称与提示词模板",
         "default": {},
-        "hint": "在插件专页以 JSON 对象编辑；键为预设名称，值为提示词模板。",
+        "hint": "在插件控制台以 JSON 对象编辑，键为预设名称、值为提示词模板。",
         "invisible": true
       }
     }
@@ -392,7 +392,7 @@
     "items": {
       "enabled": {
         "type": "bool",
-        "description": "启用",
+        "description": "启用原生 GIF",
         "default": false,
         "invisible": true
       },
@@ -404,7 +404,7 @@
       },
       "frame_duration_ms": {
         "type": "int",
-        "description": "默认每帧毫秒",
+        "description": "默认每帧时长（毫秒）",
         "default": 200,
         "invisible": true
       }
@@ -417,7 +417,7 @@
     "items": {
       "timezone": {
         "type": "string",
-        "description": "额度日界时区（IANA）",
+        "description": "额度每日重置时区（IANA）",
         "default": "UTC",
         "invisible": true
       },
@@ -425,42 +425,42 @@
         "type": "int",
         "description": "群聊用户每日搜索额度（跨群累计）",
         "default": 20,
-        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 表示不限，正整数为每日次数上限。命令与聊天共用，按成功搜索请求计次。",
         "invisible": true
       },
       "group_search": {
         "type": "int",
         "description": "群每日搜索总额度",
         "default": 200,
-        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 表示不限，正整数为每日次数上限。命令与聊天共用，按成功搜索请求计次。",
         "invisible": true
       },
       "private_search": {
         "type": "int",
         "description": "私聊用户每日搜索额度",
         "default": 20,
-        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 表示不限，正整数为每日次数上限。命令与聊天共用，按成功搜索请求计次。",
         "invisible": true
       },
       "user_image": {
         "type": "int",
         "description": "群聊用户每日生图额度（跨群累计）",
         "default": 3,
-        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 表示不限，正整数为每日张数上限。命令与自然语言共用，按提交给上游的图片张数计次（失败与审核拒绝同样占用）。",
         "invisible": true
       },
       "group_image": {
         "type": "int",
         "description": "群每日生图总额度",
         "default": 30,
-        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 表示不限，正整数为每日张数上限。命令与自然语言共用，按提交给上游的图片张数计次（失败与审核拒绝同样占用）。",
         "invisible": true
       },
       "private_image": {
         "type": "int",
         "description": "私聊用户每日生图额度",
         "default": 3,
-        "hint": "0 不限，正整数为每日额度。搜索按成功请求、生图按实际输出文件结算。",
+        "hint": "0 表示不限，正整数为每日张数上限。命令与自然语言共用，按提交给上游的图片张数计次（失败与审核拒绝同样占用）。",
         "invisible": true
       },
       "admin_exempt": {
@@ -503,7 +503,7 @@
         "type": "int",
         "description": "每消息最多搜索调用数（含首次）",
         "default": 2,
-        "hint": "插件专页按后续补查次数显示，填写 1 对应此处总调用上限 2。",
+        "hint": "每条消息的搜索总次数含首次查询。插件控制台的「后续最多补查」比此值少 1。",
         "invisible": true
       }
     },
@@ -593,14 +593,14 @@
         "description": "保存诊断日志",
         "default": false,
         "invisible": true,
-        "hint": "默认关闭；开启后滚动保存命令、工具和任务诊断，保存后立即生效。"
+        "hint": "默认关闭。开启后滚动记录命令、工具与任务诊断信息，保存后立即生效，无需重载插件。"
       },
       "max_mb": {
         "type": "int",
         "description": "诊断日志总量上限（MB）",
         "default": 100,
         "invisible": true,
-        "hint": "1–10000 MB，默认 100 MB；包括当前文件与轮转备份，达到上限后清理最旧日志。"
+        "hint": "支持 1–10000 MB，默认 100 MB；包含当前文件与轮转备份，超限后自动清理最旧日志。"
       }
     }
   }
