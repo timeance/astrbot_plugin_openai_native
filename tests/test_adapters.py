@@ -324,15 +324,26 @@ async def test_responses_image_requires_complete_tool_call(payload):
     assert len(transport.calls) == 1
 
 
-async def test_responses_gif_rejected_before_paid_request():
-    transport = RecordingTransport({})
-    with pytest.raises(NativeError):
-        await ImageAdapter(transport, Settings({"gif": {"enabled": True}})).generate(
-            connection(protocol="responses", host_model="host"),
-            image_request(output_format="gif", frame_count=9, frame_duration_ms=200),
-            [],
-        )
-    assert not transport.calls
+async def test_responses_gif_sends_frame_settings_inside_tool(gif_data):
+    transport = RecordingTransport({
+        "status": "completed",
+        "output": [{
+            "type": "image_generation_call",
+            "status": "completed",
+            "result": base64.b64encode(gif_data).decode("ascii"),
+        }],
+    })
+    result = await ImageAdapter(transport, Settings({"gif": {"enabled": True}})).generate(
+        connection(protocol="responses", host_model="host"),
+        image_request(output_format="gif", frame_count=9, frame_duration_ms=200),
+        [],
+    )
+    [(_, route, body, files)] = transport.calls
+    assert route == "responses" and files is None
+    assert not {"frame_count", "frame_duration_ms"} & body.keys()
+    [tool] = body["tools"]
+    assert (tool["output_format"], tool["frame_count"], tool["frame_duration_ms"]) == ("gif", 9, 200)
+    assert result.outputs[0].data == gif_data
 
 
 @pytest.mark.parametrize("feature", ["search", "image"])

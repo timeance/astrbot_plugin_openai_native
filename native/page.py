@@ -246,6 +246,8 @@ def _validate(values: dict) -> dict:
         raise PageError("validation", "默认图片尺寸超过单帧像素上限。")
     if image["default_format"] not in ("png", "jpeg", "webp", "gif"):
         raise PageError("validation", "默认图片格式无效。")
+    if gif["protocol"] not in ("auto", "images", "responses"):
+        raise PageError("validation", "原生 GIF 协议无效。")
     if not 2 <= gif["frame_count"] <= 16 or not 20 <= gif["frame_duration_ms"] <= 2000:
         raise PageError("validation", "GIF 帧数或帧时长超出范围。")
     return effective

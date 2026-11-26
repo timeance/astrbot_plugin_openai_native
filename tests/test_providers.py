@@ -70,6 +70,50 @@ async def test_fixed_provider_does_not_fall_back_to_current():
     context.get_current_chat_provider_id.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("gif_override", "expected_provider", "expected_protocol"),
+    [
+        ({}, "", "responses"),
+        ({"model": "gif-model", "protocol": "images"}, "", "images"),
+        ({"provider_id": "native-gif", "model": "gif-model"}, "native-gif", "images"),
+    ],
+)
+async def test_gif_route_inherits_or_uses_an_isolated_provider(gif_override, expected_provider, expected_protocol):
+    provider = loaded_provider(api_base="https://gif.invalid/v1")
+    context = context_for(provider)
+    cfg = Settings({
+        "image": {
+            "mode": "manual",
+            "base_url": "https://static.invalid/v1",
+            "keys": ["static-key"],
+            "model": "static-model",
+            "host_model": "static-host",
+            "headers": {"X-Route": "static-header"},
+            "paths": {"generations": "/static/images"},
+            "service_type": "unknown",
+            "protocol": "responses",
+        },
+        "gif": {"enabled": True, **gif_override},
+    })
+    resolver = ProviderResolver(context, cfg, b"secret")
+    resolver._identify = AsyncMock(return_value={"type": "unknown"})
+    static = await resolver.resolve(event(), "image")
+    animated = await resolver.resolve(event(), "gif")
+
+    assert static.protocol == "responses" and static.model == "static-model"
+    assert (animated.provider_id, animated.protocol) == (expected_provider, expected_protocol)
+    assert animated.model == gif_override.get("model", "static-model")
+    if expected_provider:
+        assert animated.key == "credential-A" and animated.base_url == "https://gif.invalid/v1"
+        assert animated.host_model == "chat-model"
+        assert not animated.headers and not animated.paths
+        context.get_provider_by_id.assert_called_once_with(expected_provider)
+    else:
+        assert animated.key == static.key and animated.base_url == static.base_url
+        assert animated.headers == static.headers and animated.paths == static.paths
+        context.get_provider_by_id.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_manual_whole_value_env_and_multiple_keys(monkeypatch):
     monkeypatch.setenv("NATIVE_TEST_BASE", "https://manual.invalid/deployment/v1/")

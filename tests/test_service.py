@@ -219,6 +219,49 @@ async def test_gif_keeps_original_bytes_and_per_call_frame_settings(tmp_path, ev
         await service.close()
 
 
+async def test_gif_quota_reservation_blocks_before_dispatch_and_leaves_static_quota(
+    tmp_path, event_factory, gif_data, png_data
+):
+    service = await make_service(tmp_path, gif={"enabled": True, "quota_multiplier": 2})
+    original = service.resolver.resolve.side_effect
+    gif_connection = replace(original(None, "image"), model="gif-model", fingerprint="gif-route")
+    service.resolver.resolve.side_effect = (
+        lambda event, feature: gif_connection if feature == "gif" else original(event, feature)
+    )
+    service.image_adapter.generate = AsyncMock(
+        side_effect=lambda conn, req, assets: ImageBatch([
+            RemoteImage(data=gif_data if conn == gif_connection else png_data, output_format=req.output_format)
+        ])
+    )
+    event = event_factory()
+    try:
+        with pytest.raises(NativeError) as error:
+            await service.submit_image(event, ImageRequest("two animations", output_format="gif", n=2))
+        assert error.value.category == "quota_exceeded"
+        service.image_adapter.generate.assert_not_awaited()
+
+        request = ImageRequest("one animation", output_format="gif")
+        task = await service.submit_image(event, request)
+        assert (await service.wait_task(event, task.task_id, 3))["generated"] == 1
+        assert (await service.submit_image(event, request)).task_id == task.task_id
+        service.image_adapter.generate.assert_awaited_once()
+        assert service.image_adapter.generate.await_args.args[0] == gif_connection
+        assert all(bucket["used"] == 2 and bucket["held"] == 0
+                   for bucket in (await service.quota(event))["image"])
+        ready = (await service.available_tools(event))["details"]["image"]
+        assert ready["gif_connection"]["model"] == "gif-model"
+        assert ready["capabilities"]["generate:gif"]["status"] == "available"
+        assert ready["capabilities"]["generate:png"]["status"] == "unverified"
+
+        task = await service.submit_image(event, ImageRequest("one picture", output_format="png"))
+        assert (await service.wait_task(event, task.task_id, 3))["generated"] == 1
+        assert service.image_adapter.generate.await_args.args[0] == original(event, "image")
+        assert all(bucket["used"] == 3 and bucket["held"] == 0
+                   for bucket in (await service.quota(event))["image"])
+    finally:
+        await service.close()
+
+
 @pytest.mark.asyncio
 async def test_restart_does_not_resubmit_unknown_job(tmp_path, event_factory):
     service = await make_service(tmp_path)

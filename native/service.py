@@ -419,9 +419,7 @@ class NativeService:
         if not image_trigger_allowed(event, self.settings.feature("image")["require_at_in_group"]):
             raise NativeError("mention_required", "群聊生图需在当前消息 @本机器人")
         request = self._image_request(request)
-        connection = await self._connection(event, "image")
-        if request.output_format == "gif" and connection.protocol != "images":
-            raise NativeError("unsupported_protocol", "Native GIF requires the Images API")
+        connection = await self._connection(event, "gif" if request.output_format == "gif" else "image")
         assets = await self.assets.prepare(event, actor, request, allow_local_paths=allow_local_paths)
         identity_request = asdict(replace(request, references=[]))
         identity_assets = [a.sha256 for a in assets] if request.references else "implicit-message-context"
@@ -446,6 +444,8 @@ class NativeService:
             "message:" + actor.message_id + ":" + fingerprint if actor.message_id else uuid.uuid4().hex
         )
         payload = {"options": asdict(request), "assets": [asdict(a) for a in assets]}
+        if request.output_format == "gif":
+            payload["quota_multiplier"] = self.settings.gif["quota_multiplier"]
         async with self.submit_lock:
             self._ready()
             op, created = await self.store.reserve(
@@ -838,7 +838,7 @@ class NativeService:
             for row in rows
         ]
 
-    async def _feature_readiness(self, event, feature, connection=None):
+    async def _feature_readiness(self, event, feature, connection=None, *, gif_connection=None):
         cfg = self.settings.feature(feature)
         detail = {
             "mode": cfg["mode"],
@@ -851,15 +851,36 @@ class NativeService:
         }
         if not cfg["enabled"]:
             return {**detail, "reason_code": "disabled", "reason": "此功能已关闭"}
-        if feature == "image" and (not isinstance(cfg["model"], str) or not cfg["model"].strip()):
-            return {**detail, "reason_code": "missing_image_model", "reason": "生图尚未就绪：请填写图片模型"}
-        if cfg["mode"] == "current" and event is None and connection is None:
-            return {**detail, "reason_code": "awaiting_session", "reason": "等待会话验证"}
-        try:
-            connection = connection or await self._connection(event, feature)
-        except NativeError as exc:
-            return {**detail, "reason_code": exc.category, "reason": exc.message, "error": safe_error(exc)}
-        detail.update(connection_info(connection))
+        routes = {feature: connection}
+        if feature == "image" and "gif" in cfg["formats"] and self.settings.gif["enabled"]:
+            routes["gif"] = gif_connection
+        failures = {}
+        for route, resolved in routes.items():
+            mode = "provider" if route == "gif" and self.settings.gif["provider_id"] else cfg["mode"]
+            if route == "image" and (not isinstance(cfg["model"], str) or not cfg["model"].strip()):
+                failures[route] = {
+                    "reason_code": "missing_image_model",
+                    "reason": "生图尚未就绪：请填写图片模型",
+                }
+            elif mode == "current" and event is None and resolved is None:
+                failures[route] = {"reason_code": "awaiting_session", "reason": "等待会话验证"}
+            else:
+                try:
+                    routes[route] = resolved or await self._connection(event, route)
+                except NativeError as exc:
+                    failures[route] = {
+                        "reason_code": exc.category, "reason": exc.message, "error": safe_error(exc),
+                    }
+            if route in failures:
+                routes[route] = None
+                if event is not None:
+                    self.last_connections.pop(route, None)
+        if "gif" in routes:
+            detail["gif_connection"] = failures["gif"] if "gif" in failures else connection_info(routes["gif"])
+        if not any(routes.values()):
+            return {**detail, **failures[feature]}
+        if routes[feature]:
+            detail.update(connection_info(routes[feature]))
         detail["configuration_ready"] = True
         formats, actions = [], []
         names = (
@@ -868,15 +889,15 @@ class NativeService:
             else [action + ":" + fmt for action in ("generate", "edit") for fmt in cfg["formats"]]
         )
         for name in names:
-            if name.endswith(":gif") and (
-                not self.settings.gif["enabled"] or connection.protocol != "images"
-            ):
+            route = "gif" if name.endswith(":gif") else feature
+            route_connection = routes.get(route)
+            if route_connection is None:
                 detail["capabilities"][name] = {
                     "status": "disabled",
-                    "reason": "GIF 未启用" if not self.settings.gif["enabled"] else "GIF 需要 Images 协议",
+                    "reason": failures.get(route, {}).get("reason", "GIF 未启用"),
                 }
                 continue
-            row = await self.capabilities.get(connection, name)
+            row = await self.capabilities.get(route_connection, name)
             detail["capabilities"][name] = row
             if row["status"] in {"unsupported", "auth_blocked"}:
                 continue
@@ -999,12 +1020,13 @@ class NativeService:
             if self.settings.feature(feature)["mode"] == "current" and feature in self.last_readiness:
                 latest = self.last_readiness[feature]
                 conn = self.last_connections.get(feature)
+                gif_conn = self.last_connections.get("gif") if feature == "image" else None
                 features[feature] = (
                     {
-                        **(await self._feature_readiness(None, feature, conn)),
+                        **(await self._feature_readiness(None, feature, conn, gif_connection=gif_conn)),
                         "observed_at": latest["observed_at"],
                     }
-                    if conn
+                    if conn or gif_conn
                     else latest
                 )
             else:
@@ -1026,26 +1048,21 @@ class NativeService:
             raise NativeError("permission_denied", "Administrator required")
         result = {}
         for feature in ("search", "image"):
+            if feature == "image":
+                result[feature] = await self._feature_readiness(event, feature)
+                connection = self.last_connections.get("image")
+                if connection and result[feature].get("protocol"):
+                    result[feature]["identification"] = self.resolver.identification(connection)
+                continue
             try:
                 connection = await self._connection(event, feature)
-                capabilities = (
-                    ["search"]
-                    if feature == "search"
-                    else [
-                        action + ":" + fmt
-                        for action in ("generate", "edit")
-                        for fmt in self.settings.feature("image")["formats"]
-                    ]
-                )
                 result[feature] = {
                     "provider_id": connection.provider_id,
                     "model": connection.model,
                     "protocol": connection.protocol,
                     "service_type": connection.service_type,
                     "identification": self.resolver.identification(connection),
-                    "capabilities": {
-                        name: await self.capabilities.get(connection, name) for name in capabilities
-                    },
+                    "capabilities": {"search": await self.capabilities.get(connection, "search")},
                 }
             except NativeError as exc:
                 result[feature] = {"error": exc.to_dict()}
@@ -1072,7 +1089,7 @@ class NativeService:
             or parts[1] not in ("png", "jpeg", "webp", "gif")
         ):
             raise NativeError("invalid_request", "Use search, generate:FORMAT or edit:FORMAT")
-        connection = await self._connection(event, "image")
+        connection = await self._connection(event, "gif" if parts[1] == "gif" else "image")
         await self.capabilities.reset(connection, capability)
         request = ImageRequest(
             "A blue circle on a white background"

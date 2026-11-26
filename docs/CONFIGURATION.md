@@ -45,7 +45,7 @@
 }
 ```
 
-Alpha Search 需要对应的 Alpha 渠道支持，生图需要可用的 Images 渠道；仅支持 Responses 的 Codex 直连渠道不代表支持 Images 或 GIF。
+Alpha Search 需要对应的 Alpha 渠道。请按网关实际开放的接口选择 Images 或 Responses，原生 GIF 还需要上游模型和账号支持。
 
 ### Sub2API
 
@@ -60,7 +60,15 @@ Alpha Search 需要对应的 Alpha 渠道支持，生图需要可用的 Images �
 
 ### Responses 生图
 
-将 `image.protocol` 设为 `responses` 时，`image.model` 填图片模型。`image.host_model` 指定执行 Responses 的宿主模型，留空时沿用所选供应商的模型。手动 API 模式须明确填写两者。原生 GIF 使用 `images` 协议。
+将 `image.protocol` 设为 `responses` 时，`image.model` 填图片模型。`image.host_model` 指定执行 Responses 的宿主模型，留空时沿用所选供应商的模型。手动 API 模式须明确填写两者。
+
+### 原生 GIF
+
+在「生图设置 → 原生 GIF」启用动图，保存后重载插件。GIF 供应商和模型留空时沿用静态生图配置。协议设为「自动」时沿用该连接的生图协议，指定独立供应商时默认用 Images。独立供应商使用自己的 API 地址、密钥和宿主模型。
+
+同一 NewAPI 入口有多个渠道时，可用 `gif.model` 指向专门映射到 GIF 渠道的模型别名，也可选择使用专用令牌的 AstrBot 供应商。插件根据配置在提交前选择连接。渠道和账号的 GIF 能力以实际请求为准，失败后不会自动换渠道重发。
+
+`gif.quota_multiplier` 默认 `1`。设为 `2` 时，每张已提交的 GIF 占用 2 次生图额度，群聊中的个人与群组额度均按此计算。多张任务按张预占，未提交的部分释放对应额度。
 
 ## 连接与高级参数
 

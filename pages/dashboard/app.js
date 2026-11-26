@@ -135,6 +135,17 @@
   field("image.max_pixels", "单帧像素上限", "number", "image-output", { min: 1, unit: "像素" });
   field("image.max_frames_pixels", "全部帧总像素上限", "number", "image-output", { min: 1, unit: "像素" });
   field("gif.enabled", "允许原生 GIF", "boolean", "gif", { hint: "启用后仍需账号与渠道实测支持。" });
+  field("gif.provider_id", "GIF 供应商", "select", "gif", { options: [["", "沿用图片连接"]], when: () => controls.get("gif.enabled").input.checked });
+  field("gif.model", "GIF 图片模型", "text", "gif", { placeholder: "沿用图片模型", when: () => controls.get("gif.enabled").input.checked });
+  field("gif.protocol", "GIF 协议", "select", "gif", {
+    options: [["auto", "自动"], ["images", "Images"], ["responses", "Responses"]],
+    hint: "自动模式沿用图片连接的协议。指定独立供应商时默认使用 Images。",
+    when: () => controls.get("gif.enabled").input.checked
+  });
+  field("gif.quota_multiplier", "动图额度倍率", "number", "gif", {
+    min: 1, max: 2147483647, hint: "每提交一张动图扣除的生图额度，例如 2 表示扣 2 次。",
+    when: () => controls.get("gif.enabled").input.checked
+  });
   field("gif.frame_count", "默认帧数", "number", "gif", { min: 2, max: 16, unit: "帧" });
   field("gif.frame_duration_ms", "每帧时长", "number", "gif", { min: 20, max: 2000, unit: "毫秒" });
   field("limits.timezone", "每日重置时区", "text", "quota", { placeholder: "UTC", hint: "IANA 时区，例如 Asia/Shanghai、Asia/Hong_Kong 或 UTC。" });
@@ -340,18 +351,27 @@
     }
   }
   function refreshSources() {
+    const providerLabel = (provider) => safeText(provider.label || provider.id, 100) + (provider.model ? " · " + safeText(provider.model, 100) : "");
     for (const [name, { input }] of sourceControls) {
       const selected = input.value || (state.snapshot ? sourceValue(state.snapshot.values, name) : "current");
       input.replaceChildren(option("current", "当前会话供应商"), option("manual", "手动 API"));
       for (const provider of state.providers) {
         const value = "provider:" + provider.id;
-        input.append(option(value, safeText(provider.label || provider.id, 100) + (provider.model ? " · " + safeText(provider.model, 100) : "")));
+        input.append(option(value, providerLabel(provider)));
       }
       if (selected.startsWith("provider:") && !Array.from(input.options).some((item) => item.value === selected)) {
         input.append(option(selected, "未加载的供应商 · " + safeText(selected.slice(9), 100)));
       }
       input.value = selected;
     }
+    const gifInput = controls.get("gif.provider_id").input;
+    const selected = gifInput.value;
+    gifInput.replaceChildren(option("", "沿用图片连接"));
+    for (const provider of state.providers) gifInput.append(option(provider.id, providerLabel(provider)));
+    if (selected && !Array.from(gifInput.options).some((item) => item.value === selected)) {
+      gifInput.append(option(selected, "未加载的供应商 · " + safeText(selected, 100)));
+    }
+    gifInput.value = selected;
   }
   function sourceValue(values, name) {
     const value = get(values, name + ".mode");
@@ -690,6 +710,11 @@
       if (feature?.model) lines.append(stateLine(name === "image" ? "图片模型" : "搜索模型", safeText(feature.model, 100)));
       if (feature?.protocol) lines.append(stateLine("运行协议", safeText(feature.protocol, 50)));
       if (feature?.host_model) lines.append(stateLine("宿主模型", safeText(feature.host_model, 100)));
+      const gif = feature?.gif_connection;
+      if (gif?.reason) lines.append(stateLine("GIF 连接", safeText(gif.reason)));
+      else if (gif?.protocol) {
+        lines.append(stateLine("GIF 连接", [gif.provider_id, gif.model, gif.protocol].filter(Boolean).map((value) => safeText(value, 100)).join(" · ")));
+      }
       if (feature?.observed_at) lines.append(stateLine("记录时间", formatTime(feature.observed_at)));
       technical.append(lines);
       if (feature?.reason) card.append(element("p", "readiness-reason", safeText(feature.reason)));

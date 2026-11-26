@@ -198,6 +198,7 @@ class Store:
         deliver=False,
     ):
         now, day = time.time(), self.day()
+        quota_units = units * request.get("quota_multiplier", 1)
         async with self.lock:
             await self.db.execute("BEGIN IMMEDIATE")
             try:
@@ -246,7 +247,7 @@ class Store:
                         "SELECT used,held FROM quota WHERE day=? AND bucket=? AND kind=?", (day, bucket, kind)
                     )
                     total = row["used"] + row["held"] if row else 0
-                    if limit > 0 and total + units > limit:
+                    if limit > 0 and total + quota_units > limit:
                         raise NativeError("quota_exceeded", "Daily " + kind + " quota exceeded")
                 await self.db.execute(
                     """INSERT INTO operations
@@ -279,11 +280,11 @@ class Store:
                 for bucket, _ in buckets:
                     await self.db.execute(
                         "INSERT INTO quota(day,bucket,kind,held) VALUES (?,?,?,?) ON CONFLICT(day,bucket,kind) DO UPDATE SET held=held+excluded.held",
-                        (day, bucket, kind, units),
+                        (day, bucket, kind, quota_units),
                     )
                     await self.db.execute(
                         "INSERT INTO allocations(operation_id,bucket,held) VALUES (?,?,?)",
-                        (operation_id, bucket, units),
+                        (operation_id, bucket, quota_units),
                     )
                 await self.db.commit()
             except BaseException:
@@ -328,16 +329,18 @@ class Store:
                     "SELECT * FROM allocations WHERE operation_id=?", (operation_id,)
                 ) as cur:
                     allocations = await cur.fetchall()
-                used = actual
+                used, held = actual, pending
                 if op["kind"] == "image":
-                    # Failed submitted children consume quota; uncertain ones stay held.
-                    used = max(actual, op["submitted_count"] - pending)
+                    # The multiplier is fixed at submission. Task counts stay in images.
+                    multiplier = json.loads(op["request"]).get("quota_multiplier", 1)
+                    used = max(actual, op["submitted_count"] - pending) * multiplier
+                    held = pending * multiplier
                 for allocation in allocations:
                     await self.db.execute(
                         "UPDATE quota SET used=used+?,held=held+? WHERE day=? AND bucket=? AND kind=?",
                         (
                             used - allocation["used"],
-                            pending - allocation["held"],
+                            held - allocation["held"],
                             op["day"],
                             allocation["bucket"],
                             op["kind"],
@@ -345,7 +348,7 @@ class Store:
                     )
                 await self.db.execute(
                     "UPDATE allocations SET used=?,held=? WHERE operation_id=?",
-                    (used, pending, operation_id),
+                    (used, held, operation_id),
                 )
                 await self.db.execute(
                     "UPDATE operations SET actual=?,pending=?,status=?,error=?,updated=? WHERE id=?",

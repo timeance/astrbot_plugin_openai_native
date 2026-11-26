@@ -19,6 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from .config import FEATURE
 from .models import Connection, NativeError
 
 _ENV = re.compile(
@@ -202,11 +203,27 @@ class ProviderResolver:
             raise NativeError("configuration", "Could not resolve loaded provider configuration") from None
 
     async def _resolve(self, event, feature: str) -> Connection:
+        gif = feature == "gif"
+        if gif:
+            feature = "image"
         if feature not in {"search", "image"}:
             raise NativeError("configuration", "Unknown native feature")
         cfg = deepcopy(self.settings.feature(feature))
         if not cfg.get("enabled", True):
             raise NativeError("disabled", f"{feature} is disabled")
+        if gif:
+            gif_cfg = self.settings.gif
+            if not gif_cfg["enabled"]:
+                raise NativeError("disabled", "GIF must first be enabled by an administrator")
+            provider_id = _text(gif_cfg["provider_id"], "GIF provider_id")
+            model = _text(gif_cfg["model"], "GIF model") or cfg["model"]
+            protocol = _text(gif_cfg["protocol"], "GIF protocol").lower()
+            if provider_id:
+                # Keep the static connection's headers, paths and credentials on its own route.
+                cfg = {**FEATURE, "mode": "provider", "provider_id": provider_id}
+            cfg["model"] = model
+            if protocol != "auto":
+                cfg["protocol"] = protocol
         mode = cfg.get("mode", "current")
         provider = None
         provider_id = ""
