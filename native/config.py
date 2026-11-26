@@ -50,7 +50,15 @@ DEFAULTS = {
         "acceptance_template": "已接受{kind}任务，{task_id}",
         "presets": {},
     },
-    "gif": {"enabled": False, "frame_count": 9, "frame_duration_ms": 200},
+    "gif": {
+        "enabled": False,
+        "provider_id": "",
+        "model": "",
+        "protocol": "auto",
+        "quota_multiplier": 1,
+        "frame_count": 9,
+        "frame_duration_ms": 200,
+    },
     "limits": {
         "timezone": "UTC",
         "user_search": 20,
@@ -157,6 +165,9 @@ class Settings:
                     raise ValueError(name)
             if type(self.data["image"]["require_at_in_group"]) is not bool:
                 raise ValueError("require_at_in_group")
+            multiplier = self.gif["quota_multiplier"]
+            if type(multiplier) is not int or not 1 <= multiplier <= 2_147_483_647:
+                raise ValueError("gif.quota_multiplier")
             template = self.data["image"]["acceptance_template"]
             if not isinstance(template, str) or not template.strip() or len(template) > 300:
                 raise ValueError("acceptance_template")

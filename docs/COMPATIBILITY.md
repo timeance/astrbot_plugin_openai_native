@@ -38,7 +38,7 @@ OneBot 适配器通常按回复 ID 获取消息，并构造含 `chain=abm_reply.
 
 - Responses hosted search 读取搜索调用和 URL 引用；Alpha 使用其独立 commands 请求结构，`response_length` 位于 `commands` 中。其结构依据 openai/codex 提交 `e54a5713caf331f42a6eef0166186df5f7563c29` 的 `codex-rs/codex-api/src/search.rs`。
 - Responses 生图的宿主模型与图片工具模型分开配置，不能假定 Images 模型在 Responses 同样可用。
-- GIF 采用官方指南较保守的 20–2000ms 范围；文档不同页面的时长上限存在差异。账号仍需 GIF preview 权限。
+- Images 与 Responses 均有原生 GIF 参数。Responses 的 `output_format`、`frame_count` 与 `frame_duration_ms` 位于 `image_generation` 工具配置中。插件统一使用 20–2000ms，账号仍需原生 GIF 权限。
 - 入口服务识别不等于模型、渠道和账号能力检测。泛化的 400/403/500 不足以确定故障层级。
 
 官方文档：

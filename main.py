@@ -562,7 +562,7 @@ class OpenAINativePlugin(Star):
         suffix = steps.get(exc.category, "")
         if "gif output is not enabled" in exc.message.lower():
             suffix = (
-                "上游未为本次请求启用原生 GIF。请让供应商检查模型、渠道和 GIF 权限；"
+                "上游未为本次请求启用原生 GIF。请在「原生 GIF」中选择支持动图的供应商、模型和协议。"
                 "本地 GIF 开关不能开通上游权限。需要静态图时请改用 /生图 ... --格式 png。"
             )
         return f"{exc.message}\n{suffix}".strip()

@@ -114,14 +114,20 @@ async def test_restart_without_receipt_does_not_hold_paid_image_twice(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("second_status", [400, 504], ids=["rejected", "reconciled"])
+@pytest.mark.parametrize("output_format,multiplier", [("png", 1), ("gif", 2)])
 async def test_download_retry_does_not_rehold_resolved_child(
     tmp_path,
     event_factory,
     png_data,
+    gif_data,
     monkeypatch,
     second_status,
+    output_format,
+    multiplier,
 ):
-    service = await make_service(tmp_path)
+    service = await make_service(
+        tmp_path, gif={"enabled": True, "quota_multiplier": 2}, limits={"user_image": 4},
+    )
     event = event_factory()
     posts = []
 
@@ -129,11 +135,10 @@ async def test_download_retry_does_not_rehold_resolved_child(
         assert request.method == "POST" and request.url.path == "/v1/images/generations"
         posts.append(request)
         if len(posts) == 1:
+            data = gif_data if output_format == "gif" else png_data
             return httpx.Response(
                 200,
-                json={
-                    "data": [{"b64_json": base64.b64encode(png_data).decode("ascii")}],
-                },
+                json={"data": [{"b64_json": base64.b64encode(data).decode("ascii")}]},
             )
         assert len(posts) == 2, "Recovery must not submit another paid request"
         return httpx.Response(
@@ -145,7 +150,9 @@ async def test_download_retry_does_not_rehold_resolved_child(
 
     monkeypatch.setattr(service.transport, "_injected_transport", httpx.MockTransport(respond))
     try:
-        handle = await service.submit_image(event, ImageRequest("circle", action="generate", n=2))
+        handle = await service.submit_image(
+            event, ImageRequest("circle", action="generate", n=2, output_format=output_format)
+        )
         await asyncio.wait_for(service.queue.join(), 5)
         op = await service.store.get(handle.task_id)
         assert op["actual"] == 1 and len(op["receipts"]) == 1
@@ -156,18 +163,26 @@ async def test_download_retry_does_not_rehold_resolved_child(
         else:
             assert op["status"] == "needs_reconciliation"
             assert (op["pending"], op["next_index"]) == (1, 1)
-            await _assert_quota(service, event, "image", 1, 1)
-            await service.reconcile(event_factory(admin=True), handle.task_id, 1)
-        await _assert_quota(service, event, "image", 2, 0)
-
+            await _assert_quota(service, event, "image", multiplier, multiplier)
         original_results = await service.get_results(event, handle.task_id)
+    finally:
+        await service.close()
+
+    # A new setting must not change the cost of a held or previously settled task.
+    service = await make_service(tmp_path, gif={"enabled": True, "quota_multiplier": 3})
+    try:
+        if second_status == 504:
+            await _assert_quota(service, event, "image", multiplier, multiplier)
+            await service.reconcile(event_factory(admin=True), handle.task_id, 1)
+        await _assert_quota(service, event, "image", 2 * multiplier, 0)
+
         assert len(original_results) == 1
         for _ in range(2):
             state = await service.retry_download(event, handle.task_id)
             assert state["status"] == "partial"
             assert (state["generated"], state["held"]) == (1, 0)
             assert await service.get_results(event, handle.task_id) == original_results
-            await _assert_quota(service, event, "image", 2, 0)
+            await _assert_quota(service, event, "image", 2 * multiplier, 0)
         assert len(posts) == 2
     finally:
         await service.close()

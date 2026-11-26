@@ -347,8 +347,6 @@ class ImageAdapter:
         if protocol == "responses":
             if not conn.host_model:
                 raise NativeError("configuration", "Responses image generation requires a host model")
-            if request.output_format == "gif":
-                raise NativeError("validation", "Responses image generation supports static output only")
             if request.n != 1:
                 raise NativeError("validation", "Responses image requests must contain one task item")
             return await self._responses(conn, request, await self._assets(assets), action)
@@ -420,6 +418,8 @@ class ImageAdapter:
             "size": request.size,
             "quality": request.quality,
         }
+        if request.output_format == "gif":
+            tool.update(frame_count=request.frame_count, frame_duration_ms=request.frame_duration_ms)
         if request.complexity:
             tool["complexity"] = request.complexity
         content = [{"type": "input_text", "text": request.prompt}]

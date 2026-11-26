@@ -396,6 +396,32 @@
         "default": false,
         "invisible": true
       },
+      "provider_id": {
+        "type": "string",
+        "description": "GIF 供应商",
+        "_special": "select_provider",
+        "default": "",
+        "invisible": true
+      },
+      "model": {
+        "type": "string",
+        "description": "GIF 图片模型",
+        "default": "",
+        "invisible": true
+      },
+      "protocol": {
+        "type": "string",
+        "description": "GIF 协议",
+        "options": ["auto", "images", "responses"],
+        "default": "auto",
+        "invisible": true
+      },
+      "quota_multiplier": {
+        "type": "int",
+        "description": "动图额度倍率",
+        "default": 1,
+        "invisible": true
+      },
       "frame_count": {
         "type": "int",
         "description": "默认 GIF 帧数",
